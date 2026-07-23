@@ -1,33 +1,27 @@
 """
-app_unifiee.py
-Application PaySim complète - Un seul fichier pour tout le pipeline :
-1. Chargement depuis Google Drive
-2. Préparation des données
-3. Entraînement des modèles
-4. Dashboard d'analyse complet
+PAYSIM_UNIFIED_APP.py
+Application Streamlit unifiée - Toutes les fonctionnalités en une seule interface
+
+Fusionne :
+1. PY_01_Preparation.py - Préparation des données (filtrage, calcul frais, features)
+2. PY_02_Training.py - Entraînement des modèles (M1, M2, M3)
+3. PY_03_Dashboard.py - Dashboard d'analyse (visualisations, anomalies, clustering)
+
+L'utilisateur charge son fichier CSV PaySim une seule fois,
+et l'application gère toute la chaîne de traitement.
 """
 
-# ============================================
-# ⚠️ st.set_page_config DOIT être la première commande
-# ============================================
 import streamlit as st
-st.set_page_config(
-    page_title="🛡️ PaySim - Détection d'anomalies",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ============================================
-# IMPORTS
-# ============================================
 import pandas as pd
 import numpy as np
-import os
-import gdown
-import time
 import joblib
+import os
 from datetime import datetime
+import gdown  # Ajout pour Google Drive
+
+# ============================================
+# IMPORTS POUR LES GRAPHIQUES
+# ============================================
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -43,16 +37,16 @@ from sklearn.metrics import silhouette_score
 from sklearn.manifold import TSNE
 
 # ============================================
-# CONFIGURATION
+# CONFIGURATION DE LA PAGE
 # ============================================
+st.set_page_config(
+    page_title="🛡️ PaySim - Analyse d'anomalies unifiée",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-FILE_ID = "1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA"  # ID de votre fichier sur Google Drive
-DOWNLOAD_PATH = "paysim_data.csv"
-DATASET_PREPARE_PATH = "data/dataset_prepare.csv"
-DF_TRAITE_PATH = "data/df_traite.csv"
-MODELS_DIR = "models"
-
-# Styles CSS personnalisés
+# Style personnalisé
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; }
@@ -62,162 +56,53 @@ st.markdown("""
     .alert-high { background-color: #ffa94d; color: white; padding: 5px 10px; border-radius: 5px; }
     .alert-moderate { background-color: #ffd93d; color: #333; padding: 5px 10px; border-radius: 5px; }
     .alert-normal { background-color: #6bcb77; color: white; padding: 5px 10px; border-radius: 5px; }
-    .step-completed { color: #6bcb77; font-weight: bold; }
-    .step-pending { color: #ffa94d; font-weight: bold; }
-    .step-error { color: #ff6b6b; font-weight: bold; }
+    .step-completed { background-color: #d4edda; padding: 10px; border-radius: 8px; border-left: 5px solid #28a745; }
+    .step-active { background-color: #fff3cd; padding: 10px; border-radius: 8px; border-left: 5px solid #ffc107; }
+    .step-pending { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border-left: 5px solid #6c757d; }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================
-# ÉTAT DE LA SESSION
-# ============================================
+st.markdown('<p class="main-header">🛡️ PaySim Haïti - Analyse d\'anomalies unifiée</p>', unsafe_allow_html=True)
 
+# ============================================
+# INITIALISATION DE L'ÉTAT DE SESSION
+# ============================================
 if 'step' not in st.session_state:
-    st.session_state.step = 0  # 0=chargement, 1=préparation, 2=entraînement, 3=dashboard
+    st.session_state.step = 1  # 1: Upload, 2: Préparation, 3: Entraînement, 4: Dashboard
 if 'df_raw' not in st.session_state:
     st.session_state.df_raw = None
 if 'df_prepared' not in st.session_state:
     st.session_state.df_prepared = None
-if 'df_traite' not in st.session_state:
-    st.session_state.df_traite = None
+if 'df_trained' not in st.session_state:
+    st.session_state.df_trained = None
 if 'models' not in st.session_state:
     st.session_state.models = {}
 if 'scaler' not in st.session_state:
     st.session_state.scaler = None
+if 'clustering_done' not in st.session_state:
+    st.session_state.clustering_done = False
+if 'file_loaded' not in st.session_state:
+    st.session_state.file_loaded = False
 
 # ============================================
-# FONCTIONS - PRÉPARATION (alignées sur le notebook)
+# DÉFINITIONS COMMUNES
 # ============================================
 
+# Barèmes de frais (identiques au notebook)
 CASH_OUT_BINS = [(20, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
                   (2000, 3999), (4000, 7999), (8000, 11999), (12000, 19999),
                   (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
 CASH_OUT_FEES = [6, 12, 15, 40, 65, 115, 185, 275, 380, 640, 1050, 1400, 1600]
+
 CASH_IN_BINS = CASH_OUT_BINS
 CASH_IN_FEES = [0] * 13
+
 P2P_BINS = [(10, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
             (2000, 3999), (4000, 7999), (8000, 11999), (12000, 19999),
             (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
 P2P_FEES = [0, 0, 5, 10, 25, 35, 50, 60, 70, 75, 100, 120, 130]
 
-
-def filter_type(df, exclude=("DEBIT",)):
-    return df[~df["type"].isin(exclude)].copy()
-
-
-def filter_amount_range(df, low=10, high=100_000):
-    return df[df["amount"].between(low, high)].copy()
-
-
-def compute_fees(df):
-    df = df.copy()
-    amount = df["amount"]
-    ttype = df["type"]
-    conditions, fees = [], []
-    for (lo, hi), fee in zip(CASH_OUT_BINS, CASH_OUT_FEES):
-        conditions.append((ttype == "CASH_OUT") & amount.between(lo, hi))
-        fees.append(fee)
-    for (lo, hi), fee in zip(CASH_IN_BINS, CASH_IN_FEES):
-        conditions.append((ttype == "CASH_IN") & amount.between(lo, hi))
-        fees.append(fee)
-    for (lo, hi), fee in zip(P2P_BINS, P2P_FEES):
-        conditions.append(ttype.isin(["TRANSFER", "PAYMENT"]) & amount.between(lo, hi))
-        fees.append(fee)
-    df["frais"] = np.select(conditions, fees, default=0)
-    return df
-
-
-def recalculate_balances(df):
-    df = df.copy()
-    df["newbalanceOrig"] = df["oldbalanceOrg"] - (df["amount"] + df["frais"])
-    df["newbalanceDest"] = df["oldbalanceDest"] + df["amount"]
-    return df
-
-
-def filter_balance_sanity(df, cap=100_000):
-    df = df.copy()
-    is_dest_client = df["nameDest"].str[0] == "C"
-    is_orig_client = df["nameOrig"].str[0] == "C"
-    mask = df["newbalanceOrig"] > 0
-    mask &= ~(is_dest_client & (df["newbalanceDest"] > cap))
-    mask &= ~(is_orig_client & (df["newbalanceOrig"] > cap))
-    mask &= ~(is_orig_client & (df["oldbalanceOrg"] > cap))
-    return df[mask]
-
-
-def add_temporal_features(df, night_start=22, night_end=5):
-    df = df.copy()
-    df["heure"] = (df["step"] - 1) % 24
-    df["jour"] = ((df["step"] - 1) // 24) + 1
-    df["step_night"] = ((df["heure"] >= night_start) | (df["heure"] <= night_end)).astype(int)
-    return df
-
-
-def flag_drained_accounts(df):
-    df = df.copy()
-    df["is_drained"] = ((df["oldbalanceOrg"] > 0) & (df["newbalanceOrig"] < 10)).astype(int)
-    return df
-
-
-def add_ratio_variation(df):
-    df = df.copy()
-    df["ratio_amount_balance"] = np.where(df["oldbalanceOrg"] > 0, df["amount"] / df["oldbalanceOrg"], 0)
-    df["variationOrig"] = df["oldbalanceOrg"] - df["newbalanceOrig"]
-    df["variationDest"] = df["newbalanceDest"] - df["oldbalanceDest"]
-    return df
-
-
-def add_behavioral_features(df):
-    df = df.sort_values(["nameOrig", "step"]).copy()
-    df["TempsDepuisDerniereTransaction"] = df.groupby("nameOrig")["step"].diff().fillna(0)
-    df["NbTransactionsHeure"] = df.groupby(["nameOrig", "jour", "heure"])["step"].transform("count")
-    df["NbTransactionsJour"] = df.groupby(["nameOrig", "jour"])["step"].transform("count")
-    df["MontantCumuleHeure"] = df.groupby(["nameOrig", "jour", "heure"])["amount"].transform("sum")
-    df["MontantCumuleJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("sum")
-    
-    nb_dest = df.groupby(["nameOrig", "jour"])["nameDest"].nunique().rename("NbDestinatairesjour")
-    df = df.merge(nb_dest, on=["nameOrig", "jour"], how="left")
-    nb_orig = df.groupby(["nameDest", "jour"])["nameOrig"].nunique().rename("NbEmetteursJour")
-    df = df.merge(nb_orig, on=["nameDest", "jour"], how="left")
-    
-    df["MontantMoyenJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("mean")
-    df["MontantMaxJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("max")
-    df["EcartTypeMontantsJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("std").fillna(0)
-    
-    nb_types = df.groupby(["nameOrig", "jour"])["type"].nunique().rename("NombreTypesTransactions")
-    df = df.merge(nb_types, on=["nameOrig", "jour"], how="left")
-    
-    premiere = df.groupby(["nameOrig", "jour"])["heure"].min().rename("PremiereHeure")
-    derniere = df.groupby(["nameOrig", "jour"])["heure"].max().rename("DerniereHeure")
-    df = df.merge(premiere, on=["nameOrig", "jour"], how="left")
-    df = df.merge(derniere, on=["nameOrig", "jour"], how="left")
-    return df
-
-
-def encode_type(df):
-    df = df.copy()
-    df["type_encoded"] = df["type"].astype("category").cat.codes
-    return df
-
-
-def run_preparation_pipeline(df):
-    df = filter_type(df, exclude=("DEBIT",))
-    df = filter_amount_range(df, low=10, high=100_000)
-    df = compute_fees(df)
-    df = recalculate_balances(df)
-    df = filter_balance_sanity(df, cap=100_000)
-    df = add_temporal_features(df, night_start=22, night_end=5)
-    df = flag_drained_accounts(df)
-    df = add_ratio_variation(df)
-    df = add_behavioral_features(df)
-    df = encode_type(df)
-    return df
-
-
-# ============================================
-# FONCTIONS - ENTRAÎNEMENT
-# ============================================
-
+# Familles de variables pour les modèles
 TRANSACTIONNELLES = [
     "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
     "type_encoded", "variationOrig", "variationDest", "ratio_amount_balance",
@@ -233,22 +118,158 @@ TEMPORELLES = [
     "jour", "heure", "TempsDepuisDerniereTransaction",
     "PremiereHeure", "DerniereHeure", "step_night",
 ]
+
 FEATURE_SETS = {
     "M1": TRANSACTIONNELLES,
     "M2": TRANSACTIONNELLES + COMPORTEMENTALES,
     "M3": TRANSACTIONNELLES + COMPORTEMENTALES + TEMPORELLES,
 }
+
 NUM_COLS = TRANSACTIONNELLES + COMPORTEMENTALES + TEMPORELLES
 
+VARS_UNIVARIEES = ["amount", "frais", "ratio_amount_balance",
+                   "oldbalanceOrg", "newbalanceOrig", "variationOrig"]
 
+SEVERITY_MAP = {
+    3: {"label": "🔴 Critique", "color": "#ff6b6b", "class": "alert-critical"},
+    2: {"label": "🟠 Élevée", "color": "#ffa94d", "class": "alert-high"},
+    1: {"label": "🟡 Modérée", "color": "#ffd93d", "class": "alert-moderate"},
+    0: {"label": "🟢 Normale", "color": "#6bcb77", "class": "alert-normal"},
+}
+
+# ============================================
+# CLASSE COLUMNSELECTOR (pour les pipelines)
+# ============================================
 class ColumnSelector(BaseEstimator, TransformerMixin):
     def __init__(self, columns):
         self.columns = columns
+    
     def fit(self, X, y=None):
         return self
+    
     def transform(self, X):
         return X[self.columns]
 
+# ============================================
+# FONCTIONS DE PRÉPARATION (Étape 1)
+# ============================================
+
+def filter_type(df, exclude=("DEBIT",)):
+    return df[~df["type"].isin(exclude)].copy()
+
+def filter_amount_range(df, low=10, high=100_000):
+    return df[df["amount"].between(low, high)].copy()
+
+def compute_fees(df):
+    df = df.copy()
+    amount = df["amount"]
+    ttype = df["type"]
+
+    conditions, fees = [], []
+
+    for (lo, hi), fee in zip(CASH_OUT_BINS, CASH_OUT_FEES):
+        conditions.append((ttype == "CASH_OUT") & amount.between(lo, hi))
+        fees.append(fee)
+
+    for (lo, hi), fee in zip(CASH_IN_BINS, CASH_IN_FEES):
+        conditions.append((ttype == "CASH_IN") & amount.between(lo, hi))
+        fees.append(fee)
+
+    for (lo, hi), fee in zip(P2P_BINS, P2P_FEES):
+        conditions.append(ttype.isin(["TRANSFER", "PAYMENT"]) & amount.between(lo, hi))
+        fees.append(fee)
+
+    df["frais"] = np.select(conditions, fees, default=0)
+    return df
+
+def recalculate_balances(df):
+    df = df.copy()
+    df["newbalanceOrig"] = df["oldbalanceOrg"] - (df["amount"] + df["frais"])
+    df["newbalanceDest"] = df["oldbalanceDest"] + df["amount"]
+    return df
+
+def filter_balance_sanity(df, cap=100_000):
+    df = df.copy()
+    is_dest_client = df["nameDest"].str[0] == "C"
+    is_orig_client = df["nameOrig"].str[0] == "C"
+
+    mask = df["newbalanceOrig"] > 0
+    mask &= ~(is_dest_client & (df["newbalanceDest"] > cap))
+    mask &= ~(is_orig_client & (df["newbalanceOrig"] > cap))
+    mask &= ~(is_orig_client & (df["oldbalanceOrg"] > cap))
+    return df[mask]
+
+def add_temporal_features(df, night_start=22, night_end=5):
+    df = df.copy()
+    df["heure"] = (df["step"] - 1) % 24
+    df["jour"] = ((df["step"] - 1) // 24) + 1
+    df["step_night"] = ((df["heure"] >= night_start) | (df["heure"] <= night_end)).astype(int)
+    return df
+
+def flag_drained_accounts(df):
+    df = df.copy()
+    df["is_drained"] = ((df["oldbalanceOrg"] > 0) & (df["newbalanceOrig"] < 10)).astype(int)
+    return df
+
+def add_ratio_variation(df):
+    df = df.copy()
+    df["ratio_amount_balance"] = np.where(df["oldbalanceOrg"] > 0, df["amount"] / df["oldbalanceOrg"], 0)
+    df["variationOrig"] = df["oldbalanceOrg"] - df["newbalanceOrig"]
+    df["variationDest"] = df["newbalanceDest"] - df["oldbalanceDest"]
+    return df
+
+def add_behavioral_features(df):
+    df = df.sort_values(["nameOrig", "step"]).copy()
+
+    df["TempsDepuisDerniereTransaction"] = df.groupby("nameOrig")["step"].diff().fillna(0)
+
+    df["NbTransactionsHeure"] = df.groupby(["nameOrig", "jour", "heure"])["step"].transform("count")
+    df["NbTransactionsJour"] = df.groupby(["nameOrig", "jour"])["step"].transform("count")
+
+    df["MontantCumuleHeure"] = df.groupby(["nameOrig", "jour", "heure"])["amount"].transform("sum")
+    df["MontantCumuleJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("sum")
+
+    nb_dest = df.groupby(["nameOrig", "jour"])["nameDest"].nunique().rename("NbDestinatairesjour")
+    df = df.merge(nb_dest, on=["nameOrig", "jour"], how="left")
+
+    nb_orig = df.groupby(["nameDest", "jour"])["nameOrig"].nunique().rename("NbEmetteursJour")
+    df = df.merge(nb_orig, on=["nameDest", "jour"], how="left")
+
+    df["MontantMoyenJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("mean")
+    df["MontantMaxJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("max")
+    df["EcartTypeMontantsJour"] = df.groupby(["nameOrig", "jour"])["amount"].transform("std").fillna(0)
+
+    nb_types = df.groupby(["nameOrig", "jour"])["type"].nunique().rename("NombreTypesTransactions")
+    df = df.merge(nb_types, on=["nameOrig", "jour"], how="left")
+
+    premiere = df.groupby(["nameOrig", "jour"])["heure"].min().rename("PremiereHeure")
+    derniere = df.groupby(["nameOrig", "jour"])["heure"].max().rename("DerniereHeure")
+    df = df.merge(premiere, on=["nameOrig", "jour"], how="left")
+    df = df.merge(derniere, on=["nameOrig", "jour"], how="left")
+
+    return df
+
+def encode_type(df):
+    df = df.copy()
+    df["type_encoded"] = df["type"].astype("category").cat.codes
+    return df
+
+def run_preparation_pipeline(df):
+    df = filter_type(df, exclude=("DEBIT",))
+    df = filter_amount_range(df, low=10, high=100_000)
+    df = compute_fees(df)
+    df = recalculate_balances(df)
+    df = filter_balance_sanity(df, cap=100_000)
+    df = add_temporal_features(df, night_start=22, night_end=5)
+    df = flag_drained_accounts(df)
+    df = add_ratio_variation(df)
+    df = add_behavioral_features(df)
+    df = encode_type(df)
+    return df
+
+# ============================================
+# FONCTIONS D'ENTRAÎNEMENT (Étape 2)
+# ============================================
 
 def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
     return Pipeline(steps=[
@@ -264,36 +285,10 @@ def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
     ])
 
 # ============================================
-# FONCTIONS - DASHBOARD (explications)
+# FONCTIONS D'EXPLICATION (pour l'onglet Anomalies)
 # ============================================
 
-SEVERITY_MAP = {
-    3: {"label": "🔴 Critique", "color": "#ff6b6b", "class": "alert-critical"},
-    2: {"label": "🟠 Élevée", "color": "#ffa94d", "class": "alert-high"},
-    1: {"label": "🟡 Modérée", "color": "#ffd93d", "class": "alert-moderate"},
-    0: {"label": "🟢 Normale", "color": "#6bcb77", "class": "alert-normal"},
-}
-
-VARS_UNIVARIEES = ["amount", "frais", "ratio_amount_balance",
-                   "oldbalanceOrg", "newbalanceOrig", "variationOrig"]
-
-
-def generer_resume_anomalie(row):
-    severity = SEVERITY_MAP[row['NbModelesAnomalie']]['label']
-    resume = f"Transaction {severity} - "
-    if 'type' in row.index:
-        resume += f"Type: {row['type']}, "
-    resume += f"Montant: {row['amount']:,.0f} FCFA"
-    if row['NbModelesAnomalie'] == 3:
-        resume += " 🔴 Détectée par les 3 modèles"
-    elif row['NbModelesAnomalie'] >= 2:
-        resume += " 🟠 Détectée par 2 modèles"
-    elif row['NbModelesAnomalie'] >= 1:
-        resume += " 🟡 Détectée par 1 modèle"
-    return resume
-
-
-def expliquer_anomalie(row, scaled_row, df_complet):
+def expliquer_anomalie(row, scaled_row, df_complet, seuil_percentile=95):
     explications = []
     signals = []
     stats_comparaison = {}
@@ -308,10 +303,15 @@ def expliquer_anomalie(row, scaled_row, df_complet):
             q1 = df_complet[var].quantile(0.25)
             q3 = df_complet[var].quantile(0.75)
             iqr = q3 - q1 if q3 != q1 else 1
+            
+            if iqr == 0:
+                iqr = 1
+            
             try:
                 percentile = (df_complet[var] <= valeur_actuelle).mean() * 100
             except:
                 percentile = 50
+            
             ecart_iqr = scaled_row[var] if var in scaled_row.index else 0
             
             if abs(ecart_iqr) >= 3:
@@ -335,195 +335,442 @@ def expliquer_anomalie(row, scaled_row, df_complet):
                     'Interprétation': f"Valeur {direction} à {abs(ecart_iqr):.2f} IQR de la médiane"
                 })
     
-    # Signaux d'alerte
+    # Règles métier
     if row.get('amount', 0) > df_complet['amount'].quantile(0.95):
-        signals.append({'type': '💰', 'message': f"Montant extrêmement élevé : {row['amount']:,.0f} FCFA (>95e percentile)"})
+        signals.append({
+            'type': '💰',
+            'message': f"Montant extrêmement élevé : {row['amount']:,.0f} FCFA (>95e percentile)"
+        })
+    elif row.get('amount', 0) > df_complet['amount'].quantile(0.75):
+        signals.append({
+            'type': '💰',
+            'message': f"Montant élevé : {row['amount']:,.0f} FCFA (>75e percentile)"
+        })
     
     ratio = row.get('ratio_amount_balance', 0)
     if ratio > 0.8:
-        signals.append({'type': '📊', 'message': f"Ratio montant/solde très élevé : {ratio:.1%}"})
+        signals.append({
+            'type': '📊',
+            'message': f"Ratio montant/solde très élevé : {ratio:.1%}"
+        })
+    elif ratio > 0.5:
+        signals.append({
+            'type': '📊',
+            'message': f"Ratio montant/solde élevé : {ratio:.1%}"
+        })
     
     if row.get('is_drained', 0) == 1:
-        signals.append({'type': '🏦', 'message': "Compte vidé : Le compte émetteur a été quasiment vidé"})
+        signals.append({
+            'type': '🏦',
+            'message': "Compte vidé : Le compte émetteur a été quasiment vidé"
+        })
     
     if row.get('step_night', 0) == 1:
-        signals.append({'type': '🌙', 'message': "Transaction nocturne (22h-5h)"})
+        signals.append({
+            'type': '🌙',
+            'message': "Transaction nocturne (22h-5h)"
+        })
+    
+    freq_heure = row.get('NbTransactionsHeure', 0)
+    seuil_freq = df_complet['NbTransactionsHeure'].quantile(0.95)
+    if freq_heure > seuil_freq:
+        signals.append({
+            'type': '⏱️',
+            'message': f"Fréquence horaire très élevée : {freq_heure:.0f} transactions/heure"
+        })
+    
+    if 'type' in row.index and 'type' in df_complet.columns:
+        type_median = df_complet[df_complet['type'] == row['type']]['amount'].median()
+        if type_median > 0:
+            ratio_type = row['amount'] / type_median
+            if ratio_type > 5:
+                signals.append({
+                    'type': '📈',
+                    'message': f"Montant extrême pour ce type : {ratio_type:.1f}x la médiane du type {row['type']}"
+                })
+            elif ratio_type > 3:
+                signals.append({
+                    'type': '📈',
+                    'message': f"Montant élevé pour ce type : {ratio_type:.1f}x la médiane du type {row['type']}"
+                })
+    
+    variation = row.get('variationOrig', 0)
+    if abs(variation) > df_complet['variationOrig'].quantile(0.95):
+        signals.append({
+            'type': '📉',
+            'message': f"Variation de solde très importante : {variation:,.0f} FCFA"
+        })
+    
+    if 'type' in row.index and 'type' in df_complet.columns:
+        transactions_similaires = df_complet[
+            (df_complet['type'] == row['type']) &
+            (df_complet['NbModelesAnomalie'] == 0) &
+            (abs(df_complet['heure'] - row['heure']) <= 2) if 'heure' in df_complet.columns else (df_complet['type'] == row['type'])
+        ]
+        stats_comparaison = {
+            'nb_similaires': len(transactions_similaires),
+            'montant_moyen_normal': transactions_similaires['amount'].mean() if len(transactions_similaires) > 0 else 0,
+            'frais_moyen_normal': transactions_similaires['frais'].mean() if len(transactions_similaires) > 0 else 0,
+        }
     
     return explications, signals, stats_comparaison
 
-
-# ============================================
-# INTERFACE PRINCIPALE
-# ============================================
-
-st.markdown('<p class="main-header">🛡️ PaySim — Détection d\'anomalies financières</p>', unsafe_allow_html=True)
-
-# Barre de progression des étapes
-st.subheader("📋 Pipeline complet")
-
-col_prog1, col_prog2, col_prog3, col_prog4 = st.columns(4)
-
-steps_status = [
-    ("📥 Chargement", st.session_state.step >= 0),
-    ("🔧 Préparation", st.session_state.step >= 1),
-    ("🤖 Entraînement", st.session_state.step >= 2),
-    ("📊 Dashboard", st.session_state.step >= 3)
-]
-
-for idx, (label, done) in enumerate(steps_status):
-    with [col_prog1, col_prog2, col_prog3, col_prog4][idx]:
-        if done:
-            st.markdown(f"✅ **{label}**")
-        else:
-            st.markdown(f"⏳ **{label}**")
-
-st.divider()
-
-# ============================================
-# ÉTAPE 0 : CHARGEMENT DEPUIS GOOGLE DRIVE
-# ============================================
-
-if st.session_state.step == 0:
-    st.markdown('<p class="sub-header">📥 Étape 1 : Chargement depuis Google Drive</p>', unsafe_allow_html=True)
+def generer_resume_anomalie(row):
+    severity = SEVERITY_MAP[row['NbModelesAnomalie']]['label']
+    resume = f"Transaction {severity} - "
     
-    st.info(f"📁 Fichier à charger : `PS_20174392719_1491204439457_log.csv`")
+    if 'type' in row.index:
+        resume += f"Type: {row['type']}, "
+    resume += f"Montant: {row['amount']:,.0f} FCFA"
     
-    if st.button("📥 Charger et lancer tout le pipeline", type="primary", use_container_width=True):
-        
-        progress_placeholder = st.empty()
-        status_placeholder = st.empty()
-        
-        try:
-            # --- Chargement ---
-            progress_placeholder.progress(10, text="📥 Téléchargement du fichier depuis Google Drive...")
-            
-            if os.path.exists(DOWNLOAD_PATH):
-                status_placeholder.info("📂 Fichier déjà téléchargé, utilisation du cache local...")
-                df_raw = pd.read_csv(DOWNLOAD_PATH)
+    if row['NbModelesAnomalie'] == 3:
+        resume += " 🔴 Détectée par les 3 modèles"
+    elif row['NbModelesAnomalie'] >= 2:
+        resume += " 🟠 Détectée par 2 modèles"
+    elif row['NbModelesAnomalie'] >= 1:
+        resume += " 🟡 Détectée par 1 modèle"
+    
+    return resume
+
+# ============================================
+# AFFICHAGE DES ÉTAPES
+# ============================================
+
+def afficher_progression():
+    """Affiche la barre de progression des étapes."""
+    steps = [
+        ("1. 📂 Chargement", "step_completed" if st.session_state.df_raw is not None else "step_active" if st.session_state.step == 1 else "step_pending"),
+        ("2. 🔧 Préparation", "step_completed" if st.session_state.df_prepared is not None else "step_active" if st.session_state.step == 2 else "step_pending"),
+        ("3. 🤖 Entraînement", "step_completed" if st.session_state.df_trained is not None else "step_active" if st.session_state.step == 3 else "step_pending"),
+        ("4. 📊 Dashboard", "step_active" if st.session_state.step == 4 and st.session_state.df_trained is not None else "step_pending"),
+    ]
+    
+    cols = st.columns(len(steps))
+    for i, (label, status) in enumerate(steps):
+        with cols[i]:
+            if status == "step_completed":
+                st.markdown(f'<div class="step-completed">✅ {label}</div>', unsafe_allow_html=True)
+            elif status == "step_active":
+                st.markdown(f'<div class="step-active">⏳ {label}</div>', unsafe_allow_html=True)
             else:
-                url = f"https://drive.google.com/uc?id={FILE_ID}"
-                gdown.download(url, DOWNLOAD_PATH, quiet=False)
-                df_raw = pd.read_csv(DOWNLOAD_PATH)
+                st.markdown(f'<div class="step-pending">⏸️ {label}</div>', unsafe_allow_html=True)
+
+# ============================================
+# ÉTAPE 1 : CHARGEMENT DU FICHIER (Google Drive)
+# ============================================
+
+st.markdown("---")
+
+if st.session_state.df_raw is None:
+    st.markdown("## 📂 Étape 1 : Chargement du fichier PaySim depuis Google Drive")
+    
+    # URL du fichier Google Drive
+    DRIVE_FILE_ID = "1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA"
+    DRIVE_URL = f"https://drive.google.com/file/d/{DRIVE_FILE_ID}/view?usp=sharing"
+    DIRECT_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}"
+    
+    st.info(f"📁 Fichier source : [PaySim CSV]({DRIVE_URL})")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.markdown("""
+        **Options de chargement :**
+        - Cliquez sur le bouton ci-contre pour charger automatiquement le fichier
+        - Le fichier sera téléchargé depuis Google Drive
+        - Taille estimée : ~150-200 MB (peut prendre quelques secondes)
+        """)
+    
+    with col2:
+        if st.button("🚀 Charger depuis Google Drive", type="primary", use_container_width=True):
+            with st.spinner("Téléchargement du fichier depuis Google Drive..."):
+                try:
+                    # Téléchargement du fichier
+                    output = "paysim_data.csv"
+                    gdown.download(DIRECT_DOWNLOAD_URL, output, quiet=False)
+                    
+                    # Lecture du fichier
+                    with st.spinner("Lecture du fichier CSV..."):
+                        try:
+                            df = pd.read_csv(output, encoding="utf-8")
+                        except UnicodeDecodeError:
+                            df = pd.read_csv(output, encoding="latin-1")
+                        except Exception as e:
+                            st.error(f"❌ Erreur lors de la lecture du fichier : {str(e)}")
+                            st.stop()
+                    
+                    # Nettoyage
+                    df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+                    
+                    # Vérification des colonnes
+                    required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
+                                      "oldbalanceOrg", "oldbalanceDest"}
+                    missing = required_cols - set(df.columns)
+                    if missing:
+                        st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
+                        st.stop()
+                    
+                    # Nettoyage du fichier temporaire
+                    if os.path.exists(output):
+                        os.remove(output)
+                    
+                    st.session_state.df_raw = df
+                    st.session_state.step = 2
+                    st.session_state.file_loaded = True
+                    st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ Erreur de téléchargement : {str(e)}")
+                    st.markdown("""
+                    **Solutions possibles :**
+                    1. Vérifiez votre connexion internet
+                    2. Assurez-vous que le fichier est accessible publiquement
+                    3. Essayez de télécharger manuellement et de l'uploader
+                    """)
+    
+    # Option alternative : upload manuel
+    st.divider()
+    st.markdown("**Ou téléchargez manuellement :**")
+    uploaded_file = st.file_uploader(
+        "Choisissez votre fichier CSV PaySim",
+        type=['csv'],
+        help="Le fichier doit être au format PaySim standard"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file, encoding="utf-8")
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, encoding="latin-1")
+        except Exception as e:
+            st.error(f"❌ Impossible de lire le fichier CSV. Vérifiez le format. Erreur : {str(e)}")
+            st.stop()
+        
+        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+        
+        required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
+                          "oldbalanceOrg", "oldbalanceDest"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
+            st.stop()
+        
+        st.session_state.df_raw = df
+        st.session_state.step = 2
+        st.session_state.file_loaded = True
+        st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
+        st.rerun()
+
+# ============================================
+# ÉTAPE 2 : PRÉPARATION DES DONNÉES
+# ============================================
+
+elif st.session_state.df_prepared is None:
+    afficher_progression()
+    st.markdown("---")
+    st.markdown("## 🔧 Étape 2 : Préparation des données")
+    
+    df = st.session_state.df_raw
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Lignes brutes", f"{len(df):,}")
+    with col2:
+        st.metric("📋 Colonnes", f"{len(df.columns)}")
+    with col3:
+        fraud_count = df['isFraud'].sum() if 'isFraud' in df.columns else 0
+        st.metric("🚨 Transactions frauduleuses", f"{fraud_count:,}")
+    
+    with st.expander("👁️ Aperçu des données brutes", expanded=False):
+        st.dataframe(df.head(10), use_container_width=True)
+    
+    if st.button("🚀 Lancer la préparation des données", type="primary", use_container_width=True):
+        with st.spinner("Préparation des données en cours..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            progress_placeholder.progress(25, text="✅ Fichier chargé !")
-            status_placeholder.success(f"✅ Fichier chargé : {len(df_raw):,} lignes, {len(df_raw.columns)} colonnes")
+            status_text.text("🧹 Retrait des colonnes cibles...")
+            df = df.drop(columns=["isFraud", "isFlaggedFraud"], errors="ignore")
+            progress_bar.progress(10)
             
-            st.session_state.df_raw = df_raw
+            status_text.text("🧹 Filtrage type (DEBIT) et montant...")
+            df = filter_type(df, exclude=("DEBIT",))
+            df = filter_amount_range(df, low=10, high=100_000)
+            progress_bar.progress(25)
             
-            # --- Préparation ---
-            progress_placeholder.progress(30, text="🔧 Préparation des données...")
-            status_placeholder.info("🔧 Exécution du pipeline de préparation...")
+            status_text.text("💰 Calcul des frais selon le barème métier...")
+            df = compute_fees(df)
+            progress_bar.progress(40)
             
-            df_prepared = run_preparation_pipeline(df_raw)
+            status_text.text("🏦 Recalcul des soldes...")
+            df = recalculate_balances(df)
+            df = filter_balance_sanity(df, cap=100_000)
+            progress_bar.progress(55)
             
-            os.makedirs("data", exist_ok=True)
-            df_prepared.to_csv(DATASET_PREPARE_PATH, index=False)
+            status_text.text("⏰ Features temporelles...")
+            df = add_temporal_features(df, night_start=22, night_end=5)
+            df = flag_drained_accounts(df)
+            df = add_ratio_variation(df)
+            progress_bar.progress(70)
             
-            progress_placeholder.progress(55, text="✅ Préparation terminée !")
-            status_placeholder.success(f"✅ Préparation terminée : {len(df_prepared):,} lignes, {len(df_prepared.columns)} colonnes")
+            status_text.text("🔄 Features comportementales...")
+            df = add_behavioral_features(df)
+            progress_bar.progress(90)
             
-            st.session_state.df_prepared = df_prepared
+            status_text.text("🏷️ Encodage du type...")
+            df = encode_type(df)
+            progress_bar.progress(95)
             
-            # --- Entraînement ---
-            progress_placeholder.progress(60, text="🤖 Entraînement des modèles...")
-            status_placeholder.info("🤖 Entraînement des 3 modèles (M1, M2, M3)...")
+            status_text.text("💾 Sauvegarde en mémoire...")
+            st.session_state.df_prepared = df
+            st.session_state.step = 3
+            progress_bar.progress(100)
+            status_text.text("✅ Préparation terminée !")
             
-            df_traite = df_prepared.copy()
+            st.rerun()
+
+# ============================================
+# ÉTAPE 3 : ENTRAÎNEMENT DES MODÈLES
+# ============================================
+
+elif st.session_state.df_trained is None:
+    afficher_progression()
+    st.markdown("---")
+    st.markdown("## 🤖 Étape 3 : Entraînement des modèles")
+    
+    df = st.session_state.df_prepared
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Lignes préparées", f"{len(df):,}")
+    with col2:
+        st.metric("📋 Colonnes", f"{len(df.columns)}")
+    with col3:
+        st.metric("💰 Frais total", f"{df['frais'].sum():,.0f} FCFA")
+    
+    # Familles de variables
+    st.markdown("### 🧬 Familles de variables")
+    
+    col_fam1, col_fam2, col_fam3 = st.columns(3)
+    with col_fam1:
+        st.markdown(f"**M1 — Transactionnelles** ({len(FEATURE_SETS['M1'])} variables)")
+    with col_fam2:
+        st.markdown(f"**M2 — + Comportementales** ({len(FEATURE_SETS['M2'])} variables)")
+    with col_fam3:
+        st.markdown(f"**M3 — + Temporelles** ({len(FEATURE_SETS['M3'])} variables)")
+    
+    # Paramètres
+    st.markdown("### ⚙️ Paramètres d'entraînement")
+    
+    col_param1, col_param2, col_param3 = st.columns(3)
+    with col_param1:
+        contamination = st.slider(
+            "Contamination",
+            min_value=0.001,
+            max_value=0.10,
+            value=0.01,
+            step=0.001,
+            format="%.3f"
+        )
+    with col_param2:
+        n_estimators = st.slider(
+            "Nombre d'arbres",
+            min_value=50,
+            max_value=300,
+            value=100,
+            step=10
+        )
+    with col_param3:
+        random_state = st.number_input(
+            "random_state",
+            min_value=0,
+            value=42,
+            step=1
+        )
+    
+    if st.button("🚀 Lancer l'entraînement des 3 modèles", type="primary", use_container_width=True):
+        with st.spinner("Entraînement en cours..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            logs = st.empty()
+            
             model_pipelines = {}
+            n_components_info = {}
             scaler_m3 = None
             
             for i, (name, cols) in enumerate(FEATURE_SETS.items()):
-                status_placeholder.info(f"🌲 Entraînement du modèle {name}... ({i+1}/3)")
+                status_text.info(f"🌲 Entraînement du modèle {name}...")
+                logs.info(f"Variables utilisées : {len(cols)} colonnes")
                 
-                pipeline = build_anomaly_pipeline(cols, contamination=0.01, random_state=42)
-                pipeline.fit(df_prepared)
+                pipeline = build_anomaly_pipeline(
+                    cols,
+                    contamination=contamination,
+                    random_state=random_state
+                )
+                pipeline.named_steps['isolation_forest'].n_estimators = n_estimators
                 
-                df_traite[f"Score_{name}"] = pipeline.decision_function(df_prepared)
-                df_traite[f"Prediction_{name}"] = pipeline.predict(df_prepared)
+                pipeline.fit(df)
                 
                 if name == "M3":
                     scaler_m3 = pipeline.named_steps['normalisation']
                 
-                model_pipelines[name] = pipeline
+                df[f"Score_{name}"] = pipeline.decision_function(df)
+                df[f"Prediction_{name}"] = pipeline.predict(df)
                 
-                progress_placeholder.progress(65 + i * 10, text=f"✅ Modèle {name} entraîné")
+                n_components_info[name] = pipeline.named_steps["acp"].n_components_
+                
+                n_anomalies = (df[f"Prediction_{name}"] == -1).sum()
+                logs.info(f"✅ {name} terminé : {n_anomalies:,} anomalies détectées ({n_anomalies/len(df)*100:.2f}%)")
+                
+                progress_bar.progress(int((i + 1) / len(FEATURE_SETS) * 100))
             
-            # Sauvegarder les modèles
-            os.makedirs(MODELS_DIR, exist_ok=True)
-            for name, pipeline in model_pipelines.items():
-                joblib.dump(pipeline, f"{MODELS_DIR}/pipeline_{name}.joblib")
-            if scaler_m3:
-                joblib.dump(scaler_m3, f"{MODELS_DIR}/scaler_M3.joblib")
-            
-            # Sauvegarder df_traite
-            df_traite["NbModelesAnomalie"] = (
-                (df_traite["Prediction_M1"] == -1).astype(int) +
-                (df_traite["Prediction_M2"] == -1).astype(int) +
-                (df_traite["Prediction_M3"] == -1).astype(int)
+            # Ajout des métriques
+            df["NbModelesAnomalie"] = (
+                (df["Prediction_M1"] == -1).astype(int) +
+                (df["Prediction_M2"] == -1).astype(int) +
+                (df["Prediction_M3"] == -1).astype(int)
             )
-            df_traite.to_csv(DF_TRAITE_PATH, index=False)
             
-            progress_placeholder.progress(95, text="✅ Entraînement terminé !")
-            status_placeholder.success(f"✅ Entraînement terminé : {len(df_traite):,} lignes, {len(df_traite.columns)} colonnes")
+            df["Sévérité"] = df["NbModelesAnomalie"].map(lambda x: SEVERITY_MAP[x]['label'])
             
-            st.session_state.df_traite = df_traite
-            st.session_state.models = model_pipelines
+            st.session_state.df_trained = df
             st.session_state.scaler = scaler_m3
+            st.session_state.step = 4
+            progress_bar.progress(100)
+            status_text.success("✅ Entraînement terminé avec succès !")
             
-            progress_placeholder.progress(100, text="✅ Pipeline COMPLET !")
-            status_placeholder.success("🎉 Toutes les étapes sont terminées avec succès !")
-            
-            st.session_state.step = 3
-            
-            time.sleep(1)
             st.rerun()
-            
-        except Exception as e:
-            progress_placeholder.empty()
-            st.error(f"❌ Erreur : {str(e)}")
-            st.exception(e)
 
 # ============================================
-# ÉTAPE 1-2 : AFFICHAGE DE LA PROGRESSION
+# ÉTAPE 4 : DASHBOARD
 # ============================================
 
-elif st.session_state.step == 1 or st.session_state.step == 2:
-    st.info("⏳ Traitement en cours... Veuillez patienter.")
-    st.progress(100)
-
-# ============================================
-# ÉTAPE 3 : DASHBOARD COMPLET
-# ============================================
-
-elif st.session_state.step == 3:
+else:
+    afficher_progression()
+    st.markdown("---")
+    st.markdown("## 📊 Étape 4 : Dashboard d'analyse")
     
-    df_traite = st.session_state.df_traite
-    df = df_traite  # Alias pour le dashboard
+    df = st.session_state.df_trained
+    scaler = st.session_state.scaler
     
-    # Vérification des colonnes
-    if "NbModelesAnomalie" not in df.columns:
-        df["NbModelesAnomalie"] = (
-            (df["Prediction_M1"] == -1).astype(int) +
-            (df["Prediction_M2"] == -1).astype(int) +
-            (df["Prediction_M3"] == -1).astype(int)
-        )
-    
-    # Normalisation pour les explications
-    if st.session_state.scaler is None:
+    # Normalisation pour l'ACP et le clustering
+    if scaler is not None:
+        X_scaled = scaler.transform(df[NUM_COLS])
+    else:
+        # Recalculer le scaler si non disponible
         scaler = RobustScaler()
         X_scaled = scaler.fit_transform(df[NUM_COLS])
-    else:
-        X_scaled = st.session_state.scaler.transform(df[NUM_COLS])
     
     X_scaled_df = pd.DataFrame(X_scaled, columns=NUM_COLS, index=df.index)
     
-    # Ajout de la colonne Sévérité
-    df["Sévérité"] = df["NbModelesAnomalie"].map(lambda x: SEVERITY_MAP[x]['label'])
-    
-    # --- KPIS ---
-    st.subheader("📊 Indicateurs clés")
+    # ============================================
+    # KPIS
+    # ============================================
     
     k1, k2, k3, k4, k5, k6 = st.columns(6)
+    
     with k1:
         st.metric("📄 Transactions", f"{len(df):,}")
     with k2:
@@ -537,21 +784,24 @@ elif st.session_state.step == 3:
         n_alertes = (df['NbModelesAnomalie'] >= 1).sum()
         st.metric("🚨 Signalées", f"{n_alertes:,}")
     with k6:
-        taux_anomalies = n_alertes / len(df) * 100
+        taux_anomalies = (df['NbModelesAnomalie'] >= 1).sum() / len(df) * 100
         st.metric("📊 Taux d'anomalies", f"{taux_anomalies:.2f}%")
     
     st.divider()
     
-    # --- ONGLETS ---
-    tab_univ, tab_corr, tab_cluster, tab_comp, tab_tsne, tab_anom = st.tabs([
+    # ============================================
+    # ONGLETS DU DASHBOARD
+    # ============================================
+    
+    tab13, tab14, tab15, tab16, tab17, tab_anom = st.tabs([
         "📊 Univarié", "🔗 Corrélations & ACP", "🧩 Clustering",
         "🤝 Comparaison M1/M2/M3", "🌀 t-SNE", "🚨 Anomalies"
     ])
     
-    # ========================
-    # ONGLET 1 : UNIVARIÉ
-    # ========================
-    with tab_univ:
+    # --------------------------------------------
+    # 13. ANALYSE UNIVARIÉE
+    # --------------------------------------------
+    with tab13:
         st.markdown('<p class="sub-header">Distributions des variables clés</p>', unsafe_allow_html=True)
         
         fig, axes = plt.subplots(2, 3, figsize=(16, 8))
@@ -564,8 +814,20 @@ elif st.session_state.step == 3:
         st.pyplot(fig)
         plt.close(fig)
         
+        st.markdown('<p class="sub-header">Boxplots des variables clés</p>', unsafe_allow_html=True)
+        
+        fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+        for ax, col in zip(axes.ravel(), VARS_UNIVARIEES):
+            if col in df.columns:
+                sns.boxplot(x=df[col], ax=ax)
+                ax.set_title(f"Boxplot de {col}")
+                ax.set_xlabel("")
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+        
         if 'type' in df.columns:
-            st.markdown('<p class="sub-header">Montant par type de transaction</p>', unsafe_allow_html=True)
+            st.markdown('<p class="sub-header">Montant par type de transaction (échelle log)</p>', unsafe_allow_html=True)
             fig, ax = plt.subplots(figsize=(10, 5))
             sns.boxplot(data=df, x="type", y="amount", ax=ax)
             ax.set_yscale("log")
@@ -574,13 +836,14 @@ elif st.session_state.step == 3:
             st.pyplot(fig)
             plt.close(fig)
     
-    # ========================
-    # ONGLET 2 : CORRÉLATIONS & ACP
-    # ========================
-    with tab_corr:
+    # --------------------------------------------
+    # 14. CORRÉLATIONS & ACP
+    # --------------------------------------------
+    with tab14:
         st.markdown('<p class="sub-header">Matrice de corrélation (Spearman)</p>', unsafe_allow_html=True)
         
         corr = df[NUM_COLS].corr(method="spearman")
+        
         fig, ax = plt.subplots(figsize=(14, 11))
         sns.heatmap(corr, cmap="coolwarm", center=0, square=True, 
                     cbar_kws={"shrink": 0.7}, ax=ax)
@@ -588,6 +851,25 @@ elif st.session_state.step == 3:
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+        
+        st.markdown('<p class="sub-header">Corrélation avec Score_M3</p>', unsafe_allow_html=True)
+        
+        if "Score_M3" in df.columns:
+            corr_score = (
+                df[NUM_COLS + ["Score_M3"]]
+                .corr(method="spearman")["Score_M3"]
+                .drop("Score_M3")
+                .sort_values()
+            )
+            
+            fig, ax = plt.subplots(figsize=(8, 8))
+            colors = np.where(corr_score > 0, "steelblue", "indianred")
+            corr_score.plot(kind="barh", color=colors, ax=ax)
+            ax.set_title("Corrélation (Spearman) de chaque variable avec Score_M3")
+            ax.set_xlabel("Coefficient de corrélation")
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
         
         st.markdown('<p class="sub-header">Projection ACP 2D</p>', unsafe_allow_html=True)
         
@@ -606,62 +888,151 @@ elif st.session_state.step == 3:
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+        
+        st.markdown('<p class="sub-header">Cercle des corrélations</p>', unsafe_allow_html=True)
+        
+        loadings = pd.DataFrame(
+            pca_2d.components_.T, 
+            index=NUM_COLS, 
+            columns=["Axe 1", "Axe 2"]
+        )
+        
+        fig, ax = plt.subplots(figsize=(7, 7))
+        circle = plt.Circle((0, 0), 1, fill=False, color="grey", linestyle="--")
+        ax.add_patch(circle)
+        
+        for var in loadings.index:
+            x, y = loadings.loc[var]
+            ax.arrow(0, 0, x, y, head_width=0.02, color="steelblue")
+            ax.text(x * 1.1, y * 1.1, var, fontsize=8)
+        
+        ax.set_xlim(-1.1, 1.1)
+        ax.set_ylim(-1.1, 1.1)
+        ax.set_aspect("equal")
+        ax.set_title("Cercle des corrélations (ACP à 2 axes)")
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
     
-    # ========================
-    # ONGLET 3 : CLUSTERING
-    # ========================
-    with tab_cluster:
-        st.markdown('<p class="sub-header">Clustering KMeans</p>', unsafe_allow_html=True)
+    # --------------------------------------------
+    # 15. CLUSTERING
+    # --------------------------------------------
+    with tab15:
+        st.markdown('<p class="sub-header">Recherche du nombre de clusters (Elbow / Silhouette)</p>', unsafe_allow_html=True)
         
-        n_clusters = st.number_input("Nombre de clusters", min_value=2, max_value=20, value=4, key="cluster_k")
+        sample_size = st.slider(
+            "Taille de l'échantillon",
+            1000, min(50_000, len(df)), min(20_000, len(df)), 1000,
+            key="cluster_sample_size"
+        )
         
-        if st.button("🎯 Entraîner KMeans", use_container_width=True):
-            with st.spinner(f"Entraînement de KMeans (k={n_clusters})..."):
-                kmeans = KMeans(n_clusters=int(n_clusters), random_state=42, n_init=10)
-                df["Cluster_KMeans"] = kmeans.fit_predict(X_scaled)
-                st.success("✅ KMeans entraîné !")
+        if st.button("🔍 Lancer l'exploration Elbow / Silhouette", use_container_width=True):
+            with st.spinner("Calcul de l'inertie et du score de silhouette pour k = 2..7..."):
+                rng = np.random.default_rng(42)
+                sample_idx = rng.choice(len(X_scaled), size=min(sample_size, len(X_scaled)), replace=False)
+                X_sample = X_scaled[sample_idx]
                 
-                st.write("**Répartition des clusters :**")
-                st.dataframe(df["Cluster_KMeans"].value_counts().sort_index().rename("Nb transactions"), use_container_width=True)
+                K_RANGE = range(2, 8)
+                inertias, silhouettes = [], []
                 
-                st.write("**Croisement clusters × prédictions M3 :**")
-                st.dataframe(pd.crosstab(df["Cluster_KMeans"], df["Prediction_M3"]), use_container_width=True)
+                for k in K_RANGE:
+                    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    labels = km.fit_predict(X_sample)
+                    inertias.append(km.inertia_)
+                    silhouettes.append(silhouette_score(X_sample, labels))
+                
+                st.session_state["cluster_sample_idx"] = sample_idx
+                st.session_state["elbow_results"] = (list(K_RANGE), inertias, silhouettes)
+        
+        if "elbow_results" in st.session_state:
+            K_RANGE, inertias, silhouettes = st.session_state["elbow_results"]
+            
+            fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+            
+            axes[0].plot(K_RANGE, inertias, marker="o")
+            axes[0].set_title("Méthode du coude")
+            axes[0].set_xlabel("Nombre de clusters (k)")
+            axes[0].set_ylabel("Inertie")
+            
+            axes[1].plot(K_RANGE, silhouettes, marker="o", color="darkorange")
+            axes[1].set_title("Score de silhouette")
+            axes[1].set_xlabel("Nombre de clusters (k)")
+            axes[1].set_ylabel("Silhouette")
+            
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
         
         st.divider()
-        st.markdown('<p class="sub-header">DBSCAN</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sub-header">KMeans final</p>', unsafe_allow_html=True)
+        
+        n_clusters = st.number_input("Nombre de clusters", min_value=2, max_value=20, value=4)
+        
+        if st.button("🎯 Entraîner KMeans sur l'ensemble des données", use_container_width=True):
+            with st.spinner(f"Entraînement de KMeans (k={n_clusters}) sur {len(df):,} lignes..."):
+                kmeans_final = KMeans(n_clusters=int(n_clusters), random_state=42, n_init=10)
+                df["Cluster_KMeans"] = kmeans_final.fit_predict(X_scaled)
+                st.session_state["df_with_clusters"] = df.copy()
+                st.session_state.clustering_done = True
+        
+        if st.session_state.clustering_done and "df_with_clusters" in st.session_state:
+            df_c = st.session_state["df_with_clusters"]
+            
+            st.write("**Répartition des clusters KMeans :**")
+            st.dataframe(
+                df_c["Cluster_KMeans"].value_counts().sort_index().rename("Nb transactions"),
+                use_container_width=True
+            )
+            
+            st.write("**Croisement clusters × prédictions Isolation Forest (M3) :**")
+            st.dataframe(
+                pd.crosstab(df_c["Cluster_KMeans"], df_c["Prediction_M3"]),
+                use_container_width=True
+            )
+        
+        st.divider()
+        st.markdown('<p class="sub-header">DBSCAN (sur échantillon)</p>', unsafe_allow_html=True)
         
         col_db1, col_db2 = st.columns(2)
         with col_db1:
-            eps = st.slider("eps", 0.1, 5.0, 1.5, 0.1, key="db_eps")
+            eps = st.slider("eps", 0.1, 5.0, 1.5, 0.1)
         with col_db2:
-            min_samples = st.slider("min_samples", 2, 50, 10, 1, key="db_min")
+            min_samples = st.slider("min_samples", 2, 50, 10, 1)
         
         if st.button("🔍 Lancer DBSCAN", use_container_width=True):
-            with st.spinner("Clustering DBSCAN..."):
-                sample_size = min(20000, len(df))
-                rng = np.random.default_rng(42)
-                sample_idx = rng.choice(len(X_scaled), size=sample_size, replace=False)
+            with st.spinner("Clustering DBSCAN sur l'échantillon..."):
+                if "cluster_sample_idx" not in st.session_state:
+                    rng = np.random.default_rng(42)
+                    sample_idx = rng.choice(len(X_scaled), size=min(sample_size, len(X_scaled)), replace=False)
+                    st.session_state["cluster_sample_idx"] = sample_idx
+                
+                sample_idx = st.session_state["cluster_sample_idx"]
                 X_sample = X_scaled[sample_idx]
                 
                 dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-                labels = dbscan.fit_predict(X_sample)
+                labels_dbscan_sample = dbscan.fit_predict(X_sample)
                 
-                n_clusters_db = len(set(labels)) - (1 if -1 in labels else 0)
-                n_bruit = int((labels == -1).sum())
+                n_clusters_dbscan = len(set(labels_dbscan_sample)) - (1 if -1 in labels_dbscan_sample else 0)
+                n_bruit = int((labels_dbscan_sample == -1).sum())
                 
-                st.write(f"**{n_clusters_db} clusters**, **{n_bruit} points de bruit** ({n_bruit/len(X_sample):.1%})")
+                st.write(f"**{n_clusters_dbscan} clusters**, **{n_bruit} points de bruit** "
+                         f"({n_bruit / len(X_sample):.1%} de l'échantillon)")
                 
                 df_sample = df.iloc[sample_idx].copy()
-                df_sample["Cluster_DBSCAN"] = labels
+                df_sample["Cluster_DBSCAN"] = labels_dbscan_sample
                 
-                st.write("**Croisement bruit DBSCAN × Prediction_M3 :**")
-                st.dataframe(pd.crosstab(df_sample["Cluster_DBSCAN"] == -1, df_sample["Prediction_M3"]), use_container_width=True)
+                st.write("**Croisement bruit DBSCAN × prédiction Isolation Forest (M3) :**")
+                crosstab = pd.crosstab(
+                    df_sample["Cluster_DBSCAN"] == -1, df_sample["Prediction_M3"],
+                    rownames=["Bruit DBSCAN"], colnames=["Prediction_M3"],
+                )
+                st.dataframe(crosstab, use_container_width=True)
     
-    # ========================
-    # ONGLET 4 : COMPARAISON M1/M2/M3
-    # ========================
-    with tab_comp:
-        st.markdown('<p class="sub-header">Indice de Jaccard entre modèles</p>', unsafe_allow_html=True)
+    # --------------------------------------------
+    # 16. COMPARAISON M1/M2/M3
+    # --------------------------------------------
+    with tab16:
+        st.markdown('<p class="sub-header">Indice de Jaccard entre les ensembles d\'anomalies</p>', unsafe_allow_html=True)
         
         def jaccard_anomalies(pred_a, pred_b):
             a = set(df.index[pred_a == -1])
@@ -676,40 +1047,57 @@ elif st.session_state.step == 3:
             jrows.append({
                 "Paire": f"{m1} vs {m2}",
                 "Indice de Jaccard": f"{j:.2%}",
+                "Intersection": f"{len(set(df.index[df[f'Prediction_{m1}'] == -1]) & set(df.index[df[f'Prediction_{m2}'] == -1])):,}",
+                "Union": f"{len(set(df.index[df[f'Prediction_{m1}'] == -1]) | set(df.index[df[f'Prediction_{m2}'] == -1])):,}"
             })
+        
         st.dataframe(pd.DataFrame(jrows), use_container_width=True)
         
         st.markdown('<p class="sub-header">Répartition selon le nombre de modèles</p>', unsafe_allow_html=True)
+        
         dist = df["NbModelesAnomalie"].value_counts().sort_index()
         st.bar_chart(dist)
+        st.dataframe(dist.rename("Nb transactions"), use_container_width=True)
         
         st.markdown('<p class="sub-header">Matrice de confusion entre modèles</p>', unsafe_allow_html=True)
         
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        for idx, (m1, m2) in enumerate([("M1", "M2"), ("M1", "M3"), ("M2", "M3")]):
-            confusion = pd.crosstab(df[f"Prediction_{m1}"], df[f"Prediction_{m2}"], rownames=[m1], colnames=[m2])
-            sns.heatmap(confusion, annot=True, fmt='d', cmap='Blues', ax=axes[idx])
-            axes[idx].set_title(f"{m1} vs {m2}")
-        fig.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+        if all(f"Prediction_{m}" in df.columns for m in ["M1", "M2", "M3"]):
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            
+            for idx, (m1, m2) in enumerate([("M1", "M2"), ("M1", "M3"), ("M2", "M3")]):
+                confusion = pd.crosstab(
+                    df[f"Prediction_{m1}"],
+                    df[f"Prediction_{m2}"],
+                    rownames=[m1], colnames=[m2]
+                )
+                sns.heatmap(confusion, annot=True, fmt='d', cmap='Blues', ax=axes[idx])
+                axes[idx].set_title(f"{m1} vs {m2}")
+            
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
     
-    # ========================
-    # ONGLET 5 : T-SNE
-    # ========================
-    with tab_tsne:
-        st.markdown('<p class="sub-header">Projection t-SNE</p>', unsafe_allow_html=True)
+    # --------------------------------------------
+    # 17. T-SNE
+    # --------------------------------------------
+    with tab17:
+        st.markdown('<p class="sub-header">Projection t-SNE (sur échantillon)</p>', unsafe_allow_html=True)
+        st.caption("Le t-SNE est coûteux en calcul : lancez-le explicitement sur un échantillon raisonnable.")
         
         col_tsne1, col_tsne2 = st.columns(2)
         with col_tsne1:
-            tsne_size = st.slider("Taille échantillon", 500, 10000, 3000, 500, key="tsne_size")
+            tsne_sample_size = st.slider(
+                "Taille de l'échantillon",
+                500, min(20_000, len(df)), min(5_000, len(df)), 500,
+                key="tsne_sample_size"
+            )
         with col_tsne2:
-            perplexity = st.slider("Perplexity", 5, 50, 30, 1, key="tsne_perp")
+            perplexity = st.slider("Perplexity", 5, 50, 30, 1)
         
-        if st.button("🌀 Lancer t-SNE", use_container_width=True):
-            with st.spinner("Calcul du t-SNE... (peut prendre du temps)"):
+        if st.button("🌀 Lancer le t-SNE", use_container_width=True):
+            with st.spinner("Calcul de la projection t-SNE... (peut prendre du temps)"):
                 rng = np.random.default_rng(42)
-                sample_idx = rng.choice(len(X_scaled), size=min(tsne_size, len(X_scaled)), replace=False)
+                sample_idx = rng.choice(len(X_scaled), size=min(tsne_sample_size, len(X_scaled)), replace=False)
                 X_sample = X_scaled[sample_idx]
                 
                 tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init="pca")
@@ -727,52 +1115,73 @@ elif st.session_state.step == 3:
                 st.pyplot(fig)
                 plt.close(fig)
     
-    # ========================
-    # ONGLET 6 : ANOMALIES
-    # ========================
+    # --------------------------------------------
+    # 18. ANOMALIES — EXPLORATION DÉTAILLÉE
+    # --------------------------------------------
     with tab_anom:
-        st.markdown('<p class="sub-header">🚨 Exploration détaillée des anomalies</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sub-header">🚨 Exploration détaillée des transactions signalées</p>', unsafe_allow_html=True)
+        
+        st.info("💡 Cette section permet d'analyser en profondeur chaque transaction anormale.")
         
         # Filtres
-        st.markdown("#### 🔍 Filtres")
-        
         col_f1, col_f2, col_f3 = st.columns(3)
+        
         with col_f1:
-            min_severity = st.selectbox("Sévérité minimale", [0, 1, 2, 3], index=1,
-                                        format_func=lambda x: SEVERITY_MAP[x]['label'], key="sev_filter")
+            min_severity = st.selectbox(
+                "Sévérité minimale",
+                [0, 1, 2, 3],
+                index=1,
+                format_func=lambda x: SEVERITY_MAP[x]['label']
+            )
+        
         with col_f2:
             if 'type' in df.columns:
                 types_available = sorted(df["type"].unique())
-                selected_types = st.multiselect("Filtrer par type", types_available, default=types_available, key="type_filter")
+                selected_types = st.multiselect(
+                    "Filtrer par type",
+                    types_available,
+                    default=types_available
+                )
             else:
                 selected_types = []
-        with col_f3:
-            montant_min, montant_max = st.slider("Filtre montant (FCFA)", 0, int(df['amount'].max()), 
-                                                 (0, int(df['amount'].max())), key="amt_filter")
         
+        with col_f3:
+            montant_min, montant_max = st.slider(
+                "Filtre montant (FCFA)",
+                min_value=0,
+                max_value=int(df['amount'].max()),
+                value=(0, int(df['amount'].max()))
+            )
+        
+        # Application des filtres
         filtered = df[
             (df['NbModelesAnomalie'] >= min_severity) &
             (df['amount'] >= montant_min) &
             (df['amount'] <= montant_max)
         ]
+        
         if 'type' in df.columns and selected_types:
             filtered = filtered[filtered['type'].isin(selected_types)]
         
-        # Stats
+        # Statistiques
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        
         with col_s1:
             st.metric("📄 Total anomalies", f"{len(filtered):,}")
         with col_s2:
             st.metric("💰 Montant total", f"{filtered['amount'].sum():,.0f} FCFA")
         with col_s3:
-            st.metric("📊 Montant moyen", f"{filtered['amount'].mean():,.0f} FCFA" if len(filtered) > 0 else "0 FCFA")
+            if len(filtered) > 0:
+                st.metric("📊 Montant moyen", f"{filtered['amount'].mean():,.0f} FCFA")
+            else:
+                st.metric("📊 Montant moyen", "0 FCFA")
         with col_s4:
             st.metric("🔴 Critiques", f"{(filtered['NbModelesAnomalie'] == 3).sum()}")
         
         if len(filtered) > 0 and 'type' in filtered.columns:
             fig, ax = plt.subplots(figsize=(10, 4))
             filtered['type'].value_counts().plot(kind='bar', ax=ax)
-            ax.set_xlabel("Type")
+            ax.set_xlabel("Type de transaction")
             ax.set_ylabel("Nombre d'anomalies")
             plt.xticks(rotation=45)
             st.pyplot(fig)
@@ -780,20 +1189,30 @@ elif st.session_state.step == 3:
         
         # Liste
         st.markdown("#### 📋 Liste des transactions")
+        
         display_cols = ['type', 'amount', 'heure', 'jour', 'frais', 'NbModelesAnomalie', 'Sévérité']
         display_cols = [c for c in display_cols if c in filtered.columns]
-        st.dataframe(filtered[display_cols], use_container_width=True, height=400)
         
-        # Analyse détaillée
+        filtered_display = filtered.copy()
+        filtered_display['Sévérité'] = filtered_display['NbModelesAnomalie'].map(
+            lambda x: SEVERITY_MAP[x]['label']
+        )
+        
+        st.dataframe(
+            filtered_display[display_cols],
+            use_container_width=True,
+            height=400
+        )
+        
+        # Analyse approfondie
         st.divider()
-        st.markdown('<p class="sub-header">🔬 Analyse approfondie</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sub-header">🔬 Analyse approfondie d\'une transaction</p>', unsafe_allow_html=True)
         
         if len(filtered) > 0:
             selected_idx = st.selectbox(
                 "Choisissez une transaction à analyser",
                 options=filtered.index.tolist(),
-                format_func=lambda idx: f"#{idx} - {df.loc[idx, 'type'] if 'type' in df.columns else 'Transaction'} - {df.loc[idx, 'amount']:,.0f} FCFA",
-                key="detail_select"
+                format_func=lambda idx: f"#{idx} - {df.loc[idx, 'type'] if 'type' in df.columns else 'Transaction'} - {df.loc[idx, 'amount']:,.0f} FCFA"
             )
             
             if selected_idx is not None:
@@ -803,14 +1222,15 @@ elif st.session_state.step == 3:
                 st.markdown(f"#### 📌 Transaction #{selected_idx}")
                 st.markdown(f"*{generer_resume_anomalie(row)}*")
                 
-                # Métriques
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                
                 with col_m1:
                     st.metric("🏷️ Type", row['type'] if 'type' in row.index else "N/A")
                 with col_m2:
                     st.metric("💰 Montant", f"{row['amount']:,.0f} FCFA")
                 with col_m3:
-                    st.metric("🚨 Sévérité", SEVERITY_MAP[row['NbModelesAnomalie']]['label'])
+                    severity = SEVERITY_MAP[row['NbModelesAnomalie']]['label']
+                    st.metric("🚨 Sévérité", severity)
                 with col_m4:
                     heure = int(row['heure']) if 'heure' in row.index else 0
                     jour = int(row['jour']) if 'jour' in row.index else 0
@@ -823,11 +1243,16 @@ elif st.session_state.step == 3:
                     with col:
                         pred = row[f'Prediction_{nom}']
                         statut = "🔴 ANOMALIE" if pred == -1 else "🟢 NORMAL"
-                        st.metric(f"Modèle {nom}", statut, delta=f"Score: {row[f'Score_{nom}']:.4f}",
-                                  delta_color="inverse" if pred == -1 else "normal")
+                        st.metric(
+                            f"Modèle {nom}",
+                            statut,
+                            delta=f"Score: {row[f'Score_{nom}']:.4f}",
+                            delta_color="inverse" if pred == -1 else "normal"
+                        )
                 
                 # Analyse des écarts
                 st.markdown("#### 📊 Analyse des écarts statistiques")
+                
                 deviations = scaled_row.abs().sort_values(ascending=False)
                 top_vars = deviations.head(12)
                 
@@ -839,6 +1264,7 @@ elif st.session_state.step == 3:
                         q1 = df[var].quantile(0.25)
                         q3 = df[var].quantile(0.75)
                         ecart_iqr = scaled_row[var]
+                        
                         try:
                             percentile = (df[var] <= valeur_actuelle).mean() * 100
                         except:
@@ -853,50 +1279,97 @@ elif st.session_state.step == 3:
                         else:
                             niveau = "🟢 Normal"
                         
-                        if abs(ecart_iqr) > 1:
-                            analysis_data.append({
-                                'Variable': var,
-                                'Valeur actuelle': f"{valeur_actuelle:.2f}",
-                                'Médiane': f"{mediane:.2f}",
-                                'Écart (IQR)': f"{ecart_iqr:+.2f}",
-                                'Percentile': f"{percentile:.1f}%",
-                                'Niveau': niveau,
-                            })
+                        analysis_data.append({
+                            'Variable': var,
+                            'Valeur actuelle': f"{valeur_actuelle:.2f}",
+                            'Médiane': f"{mediane:.2f}",
+                            'Écart (IQR)': f"{ecart_iqr:+.2f}",
+                            'Percentile': f"{percentile:.1f}%",
+                            'Niveau': niveau,
+                            'Interprétation': f"Valeur {'supérieure' if ecart_iqr > 0 else 'inférieure'} à la médiane de {abs(ecart_iqr):.2f} IQR"
+                        })
                 
-                if analysis_data:
-                    st.dataframe(pd.DataFrame(analysis_data), use_container_width=True)
-                    
-                    # Visualisation des écarts
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    ecarts = [float(d['Écart (IQR)']) for d in analysis_data[:10]]
-                    variables = [d['Variable'] for d in analysis_data[:10]]
-                    colors = ['red' if e > 0 else 'blue' for e in ecarts]
-                    ax.barh(variables, ecarts, color=colors)
-                    ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
-                    ax.set_xlabel("Écart en unités IQR")
-                    ax.set_title("Top 10 des variables les plus atypiques")
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close(fig)
+                st.dataframe(pd.DataFrame(analysis_data), use_container_width=True)
+                
+                # Visualisation
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ecarts = [float(d['Écart (IQR)']) for d in analysis_data[:10]]
+                variables = [d['Variable'] for d in analysis_data[:10]]
+                colors = ['red' if e > 0 else 'blue' for e in ecarts]
+                ax.barh(variables, ecarts, color=colors)
+                ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+                ax.set_xlabel("Écart en unités IQR")
+                ax.set_title("Top 10 des variables les plus atypiques")
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
                 
                 # Signaux d'alerte
                 st.markdown("#### 🚩 Signaux d'alerte détectés")
-                explications, signals, _ = expliquer_anomalie(row, scaled_row, df)
+                explications, signals, stats_comp = expliquer_anomalie(row, scaled_row, df)
+                
                 if signals:
                     for signal in signals:
                         st.write(f"{signal['type']} **{signal['message']}**")
                 else:
                     st.write("✅ Aucun signal d'alerte métier évident")
+                
+                # Export
+                st.markdown("#### 💾 Export de l'analyse")
+                if analysis_data:
+                    csv_analysis = pd.DataFrame(analysis_data).to_csv(index=False)
+                    st.download_button(
+                        "📥 Télécharger l'analyse détaillée",
+                        data=csv_analysis,
+                        file_name=f"analyse_anomalie_{selected_idx}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
         
-        # Export
+        # Export global
         st.divider()
+        st.markdown("#### 💾 Export des données filtrées")
         if len(filtered) > 0:
             csv_global = filtered.to_csv(index=False)
-            st.download_button("📥 Télécharger toutes les transactions filtrées", data=csv_global,
-                               file_name="anomalies_filtrees.csv", mime="text/csv", use_container_width=True)
+            st.download_button(
+                "📥 Télécharger toutes les transactions filtrées",
+                data=csv_global,
+                file_name="anomalies_filtrees.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    # ============================================
+    # BOUTON DE TÉLÉCHARGEMENT FINAL
+    # ============================================
+    st.divider()
+    st.markdown("### 💾 Télécharger le dataset complet")
+    
+    col_dl1, col_dl2 = st.columns(2)
+    
+    with col_dl1:
+        csv_full = df.to_csv(index=False)
+        st.download_button(
+            "📥 Télécharger df_traite.csv",
+            data=csv_full,
+            file_name="df_traite.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with col_dl2:
+        sample_size = min(1000, len(df))
+        csv_sample = df.sample(n=sample_size, random_state=42).to_csv(index=False)
+        st.download_button(
+            f"📥 Télécharger échantillon ({sample_size:,} lignes)",
+            data=csv_sample,
+            file_name="df_traite_echantillon.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-else:
-    st.info("🚀 Cliquez sur le bouton ci-dessus pour lancer l'ensemble du pipeline.")
-
+# ============================================
+# FOOTER
+# ============================================
 st.divider()
-st.caption("🛡️ PaySim - Détection d'anomalies financières (Pipeline unifié)")
+st.caption("🛡️ PaySim Haïti - Application unifiée d'analyse d'anomalies")
