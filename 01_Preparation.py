@@ -15,6 +15,70 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import gdown  # ⚠️ Nouvelle dépendance
+
+# ============================================
+# CONFIGURATION - Chemin vers votre fichier Drive
+# ============================================
+
+# Option 1 : URL de partage Google Drive (recommandé)
+DRIVE_FILE_URL = "https://drive.google.com/file/d/PS_20174392719_1491204439457_log.csv/view?usp=sharing"
+# OU l'ID du fichier (extrait de l'URL)
+FILE_ID = "PS_20174392719_1491204439457_log.csv"  # Remplacez par le vrai ID
+
+# Option 2 : Chemin local si vous montez le Drive
+# (à utiliser avec Google Colab uniquement, pas Streamlit Cloud)
+LOCAL_DRIVE_PATH = "/content/drive/MyDrive/PAYSIM/archive(1)/PS_20174392719_1491204439457_log.csv"
+
+# ============================================
+# 1. CHARGEMENT DEPUIS GOOGLE DRIVE
+# ============================================
+
+st.subheader("📂 Étape 1 : Chargement depuis Google Drive")
+
+# Bouton pour lancer le chargement
+if st.button("📥 Charger le fichier depuis Google Drive", type="primary"):
+    with st.spinner("Téléchargement du fichier depuis Google Drive..."):
+        try:
+            # Méthode 1 : Utiliser gdown pour télécharger depuis l'URL
+            # Construire l'URL de téléchargement direct
+            if FILE_ID:
+                # Extraire l'ID du fichier de l'URL ou utiliser directement
+                # Pour obtenir l'ID : dans l'URL, c'est ce qu'il y a entre /d/ et /view
+                # Exemple : https://drive.google.com/file/d/1ABC123DEF456/view -> ID = 1ABC123DEF456
+                
+                # Télécharger le fichier
+                output_file = "paysim_data.csv"
+                url = f"https://drive.google.com/uc?id={FILE_ID}"
+                gdown.download(url, output_file, quiet=False)
+                
+                # Lire le fichier téléchargé
+                df = pd.read_csv(output_file)
+                st.success("✅ Fichier chargé avec succès depuis Google Drive !")
+                
+            # Méthode 2 : Si vous êtes sur Google Colab (pas Streamlit Cloud)
+            # elif os.path.exists(LOCAL_DRIVE_PATH):
+            #     df = pd.read_csv(LOCAL_DRIVE_PATH)
+            #     st.success("✅ Fichier chargé depuis le Drive monté !")
+            
+            else:
+                st.error("❌ Aucun ID de fichier configuré. Veuillez configurer FILE_ID.")
+                st.stop()
+                
+        except Exception as e:
+            st.error(f"❌ Erreur lors du chargement : {e}")
+            st.info("""
+            💡 **Comment obtenir l'ID de votre fichier :**
+            1. Ouvrez votre fichier sur Google Drive
+            2. Cliquez sur "Partager" et copiez le lien
+            3. Le lien ressemble à : https://drive.google.com/file/d/XXXXXXX/view
+            4. Copiez le XXXXXXX (c'est l'ID du fichier)
+            5. Remplacez FILE_ID dans le code par cet ID
+            """)
+            st.stop()
+
+    # Le reste du code de préparation reste identique
+    # Continuer avec df...
 
 st.set_page_config(
     page_title="📊 Préparation des données",
