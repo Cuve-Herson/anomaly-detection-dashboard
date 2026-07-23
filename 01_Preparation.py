@@ -1,14 +1,3 @@
-PAYSIM_UNIFIED_APP.py
-Application Streamlit unifiée - Toutes les fonctionnalités en une seule interface
-
-Fusionne :
-1. PY_01_Preparation.py - Préparation des données (filtrage, calcul frais, features)
-2. PY_02_Training.py - Entraînement des modèles (M1, M2, M3)
-3. PY_03_Dashboard.py - Dashboard d'analyse (visualisations, anomalies, clustering)
-
-L'utilisateur charge son fichier CSV PaySim une seule fois,
-et l'application gère toute la chaîne de traitement.
-"""
 
 import streamlit as st
 import pandas as pd
