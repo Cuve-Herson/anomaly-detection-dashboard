@@ -3,32 +3,9 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-import gc  # ← AJOUTÉ pour le garbage collector
+import gc
 from datetime import datetime
 import gdown
-
-# ============================================
-# FONCTIONS D'OPTIMISATION MÉMOIRE
-# ============================================
-
-def liberer_memoire():
-    """Libère la mémoire en forçant le garbage collector."""
-    # Supprimer le DataFrame brut
-    if 'df_raw' in st.session_state:
-        st.session_state.df_raw = None
-    
-    # Supprimer le fichier CSV temporaire
-    if os.path.exists("paysim_data.csv"):
-        os.remove("paysim_data.csv")
-    
-    # Forcer le garbage collector
-    gc.collect()
-    
-    # Afficher la mémoire libérée (optionnel)
-    import psutil
-    process = psutil.Process()
-    memory_mb = process.memory_info().rss / 1024 / 1024
-    st.session_state.memory_after_gc = memory_mb
 
 # ============================================
 # IMPORTS POUR LES GRAPHIQUES
@@ -79,7 +56,7 @@ st.markdown('<p class="main-header">🛡️ PaySim Haïti - Analyse d\'anomalies
 # INITIALISATION DE L'ÉTAT DE SESSION
 # ============================================
 if 'step' not in st.session_state:
-    st.session_state.step = 1  # 1: Upload, 2: Préparation, 3: Entraînement, 4: Dashboard
+    st.session_state.step = 1
 if 'df_raw' not in st.session_state:
     st.session_state.df_raw = None
 if 'df_prepared' not in st.session_state:
@@ -99,7 +76,6 @@ if 'file_loaded' not in st.session_state:
 # DÉFINITIONS COMMUNES
 # ============================================
 
-# Barèmes de frais (identiques au notebook)
 CASH_OUT_BINS = [(20, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
                   (2000, 3999), (4000, 7999), (8000, 11999), (12000, 19999),
                   (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
@@ -113,7 +89,6 @@ P2P_BINS = [(10, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
             (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
 P2P_FEES = [0, 0, 5, 10, 25, 35, 50, 60, 70, 75, 100, 120, 130]
 
-# Familles de variables pour les modèles
 TRANSACTIONNELLES = [
     "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
     "type_encoded", "variationOrig", "variationDest", "ratio_amount_balance",
@@ -149,7 +124,7 @@ SEVERITY_MAP = {
 }
 
 # ============================================
-# CLASSE COLUMNSELECTOR (pour les pipelines)
+# CLASSE COLUMNSELECTOR
 # ============================================
 class ColumnSelector(BaseEstimator, TransformerMixin):
     def __init__(self, columns):
@@ -162,7 +137,7 @@ class ColumnSelector(BaseEstimator, TransformerMixin):
         return X[self.columns]
 
 # ============================================
-# FONCTIONS DE PRÉPARATION (Étape 1)
+# FONCTIONS DE PRÉPARATION
 # ============================================
 
 def filter_type(df, exclude=("DEBIT",)):
@@ -279,7 +254,7 @@ def run_preparation_pipeline(df):
     return df
 
 # ============================================
-# FONCTIONS D'ENTRAÎNEMENT (Étape 2)
+# FONCTIONS D'ENTRAÎNEMENT
 # ============================================
 
 def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
@@ -296,7 +271,7 @@ def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
     ])
 
 # ============================================
-# FONCTIONS D'EXPLICATION (pour l'onglet Anomalies)
+# FONCTIONS D'EXPLICATION
 # ============================================
 
 def expliquer_anomalie(row, scaled_row, df_complet, seuil_percentile=95):
@@ -346,7 +321,6 @@ def expliquer_anomalie(row, scaled_row, df_complet, seuil_percentile=95):
                     'Interprétation': f"Valeur {direction} à {abs(ecart_iqr):.2f} IQR de la médiane"
                 })
     
-    # Règles métier
     if row.get('amount', 0) > df_complet['amount'].quantile(0.95):
         signals.append({
             'type': '💰',
@@ -448,12 +422,10 @@ def generer_resume_anomalie(row):
 # ============================================
 
 def afficher_progression():
-    """Affiche la barre de progression des étapes."""
     steps = [
-        ("1. 📂 Chargement", "step_completed" if st.session_state.df_raw is not None else "step_active" if st.session_state.step == 1 else "step_pending"),
-        ("2. 🔧 Préparation", "step_completed" if st.session_state.df_prepared is not None else "step_active" if st.session_state.step == 2 else "step_pending"),
-        ("3. 🤖 Entraînement", "step_completed" if st.session_state.df_trained is not None else "step_active" if st.session_state.step == 3 else "step_pending"),
-        ("4. 📊 Dashboard", "step_active" if st.session_state.step == 4 and st.session_state.df_trained is not None else "step_pending"),
+        ("1. 📂 Chargement", "step_completed" if st.session_state.df_prepared is not None else "step_active" if st.session_state.step == 1 else "step_pending"),
+        ("2. 🤖 Entraînement", "step_completed" if st.session_state.df_trained is not None else "step_active" if st.session_state.step == 2 else "step_pending"),
+        ("3. 📊 Dashboard", "step_active" if st.session_state.step == 3 and st.session_state.df_trained is not None else "step_pending"),
     ]
     
     cols = st.columns(len(steps))
@@ -467,48 +439,67 @@ def afficher_progression():
                 st.markdown(f'<div class="step-pending">⏸️ {label}</div>', unsafe_allow_html=True)
 
 # ============================================
-# ÉTAPE 1 : CHARGEMENT DU FICHIER (Google Drive)
+# ÉTAPE 1 : CHARGEMENT + PRÉPARATION (FUSIONNÉES)
 # ============================================
 
 st.markdown("---")
 
-if st.session_state.df_raw is None:
-    st.markdown("## 📂 Étape 1 : Chargement du fichier PaySim depuis Google Drive")
+if st.session_state.df_prepared is None:
+    st.markdown("## 📂 Étape 1 : Chargement et préparation du fichier PaySim")
     
-    # URL du fichier Google Drive
     DRIVE_FILE_ID = "1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA"
     DRIVE_URL = f"https://drive.google.com/file/d/{DRIVE_FILE_ID}/view?usp=sharing"
     DIRECT_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}"
     
     st.info(f"📁 Fichier source : [PaySim CSV]({DRIVE_URL})")
     
+    # Paramètres de chargement
+    st.markdown("### ⚙️ Paramètres de chargement")
+    
+    MAX_ROWS = st.selectbox(
+        "Nombre de lignes à charger",
+        options=[10000, 25000, 50000, 100000, 200000, 500000],
+        index=2,  # 50 000 par défaut
+        help="Chargez moins de lignes pour éviter les problèmes de mémoire sur Streamlit Cloud (limite ~1-2 GB)"
+    )
+    
+    st.warning("""
+    ⚠️ **Important :** Streamlit Cloud a une limite de mémoire d'environ 1-2 GB.
+    - 50 000 lignes = recommandé (stable)
+    - 100 000 lignes = risque modéré
+    - 200 000+ lignes = risque élevé de crash
+    """)
+    
     col1, col2 = st.columns([3, 1])
     
     with col1:
         st.markdown("""
-        **Options de chargement :**
-        - Cliquez sur le bouton ci-contre pour charger automatiquement le fichier
-        - Le fichier sera téléchargé depuis Google Drive
-        - Taille estimée : ~150-200 MB (peut prendre quelques secondes)
+        **Comment ça fonctionne :**
+        - Le fichier est téléchargé depuis Google Drive
+        - Seulement le nombre de lignes sélectionné est chargé
+        - La préparation est faite immédiatement
+        - Le fichier original (494 MB) est supprimé après préparation
+        - Seul le résultat préparé est conservé en mémoire
         """)
     
     with col2:
-        if st.button("🚀 Charger depuis Google Drive", type="primary", use_container_width=True):
-            with st.spinner("Téléchargement du fichier depuis Google Drive..."):
+        if st.button("🚀 Charger et préparer", type="primary", use_container_width=True):
+            with st.spinner("Téléchargement et préparation des données..."):
                 try:
-                    # Téléchargement du fichier
+                    # Téléchargement
                     output = "paysim_data.csv"
+                    st.info("📥 Téléchargement depuis Google Drive...")
                     gdown.download(DIRECT_DOWNLOAD_URL, output, quiet=False)
                     
-                    # Lecture du fichier
-                    with st.spinner("Lecture du fichier CSV..."):
-                        try:
-                            df = pd.read_csv(output, encoding="utf-8")
-                        except UnicodeDecodeError:
-                            df = pd.read_csv(output, encoding="latin-1")
-                        except Exception as e:
-                            st.error(f"❌ Erreur lors de la lecture du fichier : {str(e)}")
-                            st.stop()
+                    # Lecture avec limitation
+                    st.info(f"📊 Lecture de {MAX_ROWS:,} lignes...")
+                    
+                    try:
+                        df = pd.read_csv(output, encoding="utf-8", nrows=MAX_ROWS)
+                    except UnicodeDecodeError:
+                        df = pd.read_csv(output, encoding="latin-1", nrows=MAX_ROWS)
+                    
+                    st.info(f"✅ {len(df):,} lignes chargées")
                     
                     # Nettoyage
                     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
@@ -521,23 +512,47 @@ if st.session_state.df_raw is None:
                         st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
                         st.stop()
                     
+                    # PRÉPARATION IMMÉDIATE
+                    st.info("🔧 Préparation des données...")
+                    df = run_preparation_pipeline(df)
+                    
+                    # Optimisation mémoire
+                    for col in df.select_dtypes(include=['float64']).columns:
+                        df[col] = df[col].astype('float32')
+                    for col in df.select_dtypes(include=['int64']).columns:
+                        df[col] = df[col].astype('int32')
+                    
                     # Nettoyage du fichier temporaire
                     if os.path.exists(output):
                         os.remove(output)
+                        st.info("🗑️ Fichier CSV temporaire supprimé")
                     
-                    st.session_state.df_raw = df
+                    # Libération de la mémoire
+                    gc.collect()
+                    
+                    # Sauvegarde
+                    st.session_state.df_prepared = df
                     st.session_state.step = 2
                     st.session_state.file_loaded = True
-                    st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
+                    
+                    memory_used = df.memory_usage(deep=True).sum() / 1024 / 1024
+                    
+                    st.success(f"""
+                    ✅ Chargement et préparation terminés avec succès !
+                    - 📊 {len(df):,} transactions préparées
+                    - 💾 Mémoire utilisée : {memory_used:.2f} MB
+                    - 🗑️ Fichier original (494 MB) libéré
+                    """)
+                    
                     st.rerun()
                     
                 except Exception as e:
-                    st.error(f"❌ Erreur de téléchargement : {str(e)}")
+                    st.error(f"❌ Erreur : {str(e)}")
                     st.markdown("""
-                    **Solutions possibles :**
-                    1. Vérifiez votre connexion internet
-                    2. Assurez-vous que le fichier est accessible publiquement
-                    3. Essayez de télécharger manuellement et de l'uploader
+                    **Solutions :**
+                    1. Réduisez le nombre de lignes
+                    2. Vérifiez votre connexion internet
+                    3. Assurez-vous que le fichier est accessible
                     """)
     
     # Option alternative : upload manuel
@@ -551,130 +566,41 @@ if st.session_state.df_raw is None:
     
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file, encoding="utf-8")
-        except UnicodeDecodeError:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding="latin-1")
-        except Exception as e:
-            st.error(f"❌ Impossible de lire le fichier CSV. Vérifiez le format. Erreur : {str(e)}")
-            st.stop()
-        
-        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-        
-        required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
-                          "oldbalanceOrg", "oldbalanceDest"}
-        missing = required_cols - set(df.columns)
-        if missing:
-            st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
-            st.stop()
-        
-        st.session_state.df_raw = df
-        st.session_state.step = 2
-        st.session_state.file_loaded = True
-        st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
-        st.rerun()
-
-# ============================================
-# ÉTAPE 2 : PRÉPARATION DES DONNÉES (AVEC LIBÉRATION DE MÉMOIRE)
-# ============================================
-
-elif st.session_state.df_prepared is None:
-    afficher_progression()
-    st.markdown("---")
-    st.markdown("## 🔧 Étape 2 : Préparation des données")
-    
-    df = st.session_state.df_raw
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("📊 Lignes brutes", f"{len(df):,}")
-    with col2:
-        st.metric("📋 Colonnes", f"{len(df.columns)}")
-    with col3:
-        fraud_count = df['isFraud'].sum() if 'isFraud' in df.columns else 0
-        st.metric("🚨 Transactions frauduleuses", f"{fraud_count:,}")
-    
-    with st.expander("👁️ Aperçu des données brutes", expanded=False):
-        st.dataframe(df.head(10), use_container_width=True)
-    
-    if st.button("🚀 Lancer la préparation des données", type="primary", use_container_width=True):
-        with st.spinner("Préparation des données en cours..."):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            df = pd.read_csv(uploaded_file, nrows=MAX_ROWS)
             
-            status_text.text("🧹 Retrait des colonnes cibles...")
-            df = df.drop(columns=["isFraud", "isFlaggedFraud"], errors="ignore")
-            progress_bar.progress(10)
+            df.columns = df.columns.str.strip().str.replace('\ufeff', '')
             
-            status_text.text("🧹 Filtrage type (DEBIT) et montant...")
-            df = filter_type(df, exclude=("DEBIT",))
-            df = filter_amount_range(df, low=10, high=100_000)
-            progress_bar.progress(25)
+            required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
+                              "oldbalanceOrg", "oldbalanceDest"}
+            missing = required_cols - set(df.columns)
+            if missing:
+                st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
+                st.stop()
             
-            status_text.text("💰 Calcul des frais selon le barème métier...")
-            df = compute_fees(df)
-            progress_bar.progress(40)
+            df = run_preparation_pipeline(df)
             
-            status_text.text("🏦 Recalcul des soldes...")
-            df = recalculate_balances(df)
-            df = filter_balance_sanity(df, cap=100_000)
-            progress_bar.progress(55)
+            for col in df.select_dtypes(include=['float64']).columns:
+                df[col] = df[col].astype('float32')
+            for col in df.select_dtypes(include=['int64']).columns:
+                df[col] = df[col].astype('int32')
             
-            status_text.text("⏰ Features temporelles...")
-            df = add_temporal_features(df, night_start=22, night_end=5)
-            df = flag_drained_accounts(df)
-            df = add_ratio_variation(df)
-            progress_bar.progress(70)
-            
-            status_text.text("🔄 Features comportementales...")
-            df = add_behavioral_features(df)
-            progress_bar.progress(90)
-            
-            status_text.text("🏷️ Encodage du type...")
-            df = encode_type(df)
-            progress_bar.progress(95)
-            
-            status_text.text("💾 Sauvegarde en mémoire...")
             st.session_state.df_prepared = df
-            st.session_state.step = 3
-            progress_bar.progress(100)
-            
-            # ============================================
-            # 🔥 LIBÉRATION DE LA MÉMOIRE ICI 🔥
-            # ============================================
-            status_text.text("🗑️ Libération de la mémoire...")
-            
-            # 1. Supprimer le DataFrame brut (le fichier original de 494 MB)
-            st.session_state.df_raw = None
-            
-            # 2. Supprimer le fichier CSV temporaire
-            if os.path.exists("paysim_data.csv"):
-                os.remove("paysim_data.csv")
-                status_text.text("🗑️ Fichier CSV temporaire supprimé")
-            
-            # 3. Forcer le garbage collector
-            gc.collect()
-            
-            # 4. Afficher le message de succès avec la mémoire libérée
-            memory_freed = "494"  # Taille approximative
-            status_text.success("✅ Préparation terminée !")
-            st.success(f"""
-            ✅ Préparation terminée avec succès !
-            - 📊 {len(df):,} transactions préparées
-            - 🗑️ Fichier original de ~{memory_freed} MB libéré de la mémoire
-            - 💾 Mémoire disponible pour les prochaines étapes
-            """)
-            
+            st.session_state.step = 2
+            st.session_state.file_loaded = True
+            st.success(f"✅ {len(df):,} transactions chargées et préparées avec succès !")
             st.rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
 
 # ============================================
-# ÉTAPE 3 : ENTRAÎNEMENT DES MODÈLES
+# ÉTAPE 2 : ENTRAÎNEMENT DES MODÈLES
 # ============================================
 
 elif st.session_state.df_trained is None:
     afficher_progression()
     st.markdown("---")
-    st.markdown("## 🤖 Étape 3 : Entraînement des modèles")
+    st.markdown("## 🤖 Étape 2 : Entraînement des modèles")
     
     df = st.session_state.df_prepared
     
@@ -686,7 +612,6 @@ elif st.session_state.df_trained is None:
     with col3:
         st.metric("💰 Frais total", f"{df['frais'].sum():,.0f} FCFA")
     
-    # Familles de variables
     st.markdown("### 🧬 Familles de variables")
     
     col_fam1, col_fam2, col_fam3 = st.columns(3)
@@ -697,7 +622,6 @@ elif st.session_state.df_trained is None:
     with col_fam3:
         st.markdown(f"**M3 — + Temporelles** ({len(FEATURE_SETS['M3'])} variables)")
     
-    # Paramètres
     st.markdown("### ⚙️ Paramètres d'entraînement")
     
     col_param1, col_param2, col_param3 = st.columns(3)
@@ -730,15 +654,11 @@ elif st.session_state.df_trained is None:
         with st.spinner("Entraînement en cours..."):
             progress_bar = st.progress(0)
             status_text = st.empty()
-            logs = st.empty()
             
-            model_pipelines = {}
-            n_components_info = {}
             scaler_m3 = None
             
             for i, (name, cols) in enumerate(FEATURE_SETS.items()):
                 status_text.info(f"🌲 Entraînement du modèle {name}...")
-                logs.info(f"Variables utilisées : {len(cols)} colonnes")
                 
                 pipeline = build_anomaly_pipeline(
                     cols,
@@ -755,14 +675,12 @@ elif st.session_state.df_trained is None:
                 df[f"Score_{name}"] = pipeline.decision_function(df)
                 df[f"Prediction_{name}"] = pipeline.predict(df)
                 
-                n_components_info[name] = pipeline.named_steps["acp"].n_components_
-                
                 n_anomalies = (df[f"Prediction_{name}"] == -1).sum()
-                logs.info(f"✅ {name} terminé : {n_anomalies:,} anomalies détectées ({n_anomalies/len(df)*100:.2f}%)")
+                status_text.info(f"✅ {name} terminé : {n_anomalies:,} anomalies détectées ({n_anomalies/len(df)*100:.2f}%)")
                 
                 progress_bar.progress(int((i + 1) / len(FEATURE_SETS) * 100))
+                gc.collect()
             
-            # Ajout des métriques
             df["NbModelesAnomalie"] = (
                 (df["Prediction_M1"] == -1).astype(int) +
                 (df["Prediction_M2"] == -1).astype(int) +
@@ -773,38 +691,33 @@ elif st.session_state.df_trained is None:
             
             st.session_state.df_trained = df
             st.session_state.scaler = scaler_m3
-            st.session_state.step = 4
+            st.session_state.step = 3
             progress_bar.progress(100)
             status_text.success("✅ Entraînement terminé avec succès !")
             
             st.rerun()
 
 # ============================================
-# ÉTAPE 4 : DASHBOARD
+# ÉTAPE 3 : DASHBOARD
 # ============================================
 
 else:
     afficher_progression()
     st.markdown("---")
-    st.markdown("## 📊 Étape 4 : Dashboard d'analyse")
+    st.markdown("## 📊 Étape 3 : Dashboard d'analyse")
     
     df = st.session_state.df_trained
     scaler = st.session_state.scaler
     
-    # Normalisation pour l'ACP et le clustering
     if scaler is not None:
         X_scaled = scaler.transform(df[NUM_COLS])
     else:
-        # Recalculer le scaler si non disponible
         scaler = RobustScaler()
         X_scaled = scaler.fit_transform(df[NUM_COLS])
     
     X_scaled_df = pd.DataFrame(X_scaled, columns=NUM_COLS, index=df.index)
     
-    # ============================================
     # KPIS
-    # ============================================
-    
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     
     with k1:
@@ -1159,7 +1072,6 @@ else:
         
         st.info("💡 Cette section permet d'analyser en profondeur chaque transaction anormale.")
         
-        # Filtres
         col_f1, col_f2, col_f3 = st.columns(3)
         
         with col_f1:
@@ -1189,7 +1101,6 @@ else:
                 value=(0, int(df['amount'].max()))
             )
         
-        # Application des filtres
         filtered = df[
             (df['NbModelesAnomalie'] >= min_severity) &
             (df['amount'] >= montant_min) &
@@ -1199,7 +1110,6 @@ else:
         if 'type' in df.columns and selected_types:
             filtered = filtered[filtered['type'].isin(selected_types)]
         
-        # Statistiques
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
         
         with col_s1:
@@ -1223,7 +1133,6 @@ else:
             st.pyplot(fig)
             plt.close(fig)
         
-        # Liste
         st.markdown("#### 📋 Liste des transactions")
         
         display_cols = ['type', 'amount', 'heure', 'jour', 'frais', 'NbModelesAnomalie', 'Sévérité']
@@ -1240,7 +1149,6 @@ else:
             height=400
         )
         
-        # Analyse approfondie
         st.divider()
         st.markdown('<p class="sub-header">🔬 Analyse approfondie d\'une transaction</p>', unsafe_allow_html=True)
         
@@ -1272,7 +1180,6 @@ else:
                     jour = int(row['jour']) if 'jour' in row.index else 0
                     st.metric("🕐 Heure/Jour", f"{heure}h - Jour {jour}")
                 
-                # Scores
                 st.markdown("#### 🤖 Scores des modèles")
                 col_sc1, col_sc2, col_sc3 = st.columns(3)
                 for idx_mod, (col, nom) in enumerate(zip([col_sc1, col_sc2, col_sc3], ['M1', 'M2', 'M3'])):
@@ -1286,7 +1193,6 @@ else:
                             delta_color="inverse" if pred == -1 else "normal"
                         )
                 
-                # Analyse des écarts
                 st.markdown("#### 📊 Analyse des écarts statistiques")
                 
                 deviations = scaled_row.abs().sort_values(ascending=False)
@@ -1327,7 +1233,6 @@ else:
                 
                 st.dataframe(pd.DataFrame(analysis_data), use_container_width=True)
                 
-                # Visualisation
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ecarts = [float(d['Écart (IQR)']) for d in analysis_data[:10]]
                 variables = [d['Variable'] for d in analysis_data[:10]]
@@ -1340,7 +1245,6 @@ else:
                 st.pyplot(fig)
                 plt.close(fig)
                 
-                # Signaux d'alerte
                 st.markdown("#### 🚩 Signaux d'alerte détectés")
                 explications, signals, stats_comp = expliquer_anomalie(row, scaled_row, df)
                 
@@ -1350,7 +1254,6 @@ else:
                 else:
                     st.write("✅ Aucun signal d'alerte métier évident")
                 
-                # Export
                 st.markdown("#### 💾 Export de l'analyse")
                 if analysis_data:
                     csv_analysis = pd.DataFrame(analysis_data).to_csv(index=False)
@@ -1362,7 +1265,6 @@ else:
                         use_container_width=True
                     )
         
-        # Export global
         st.divider()
         st.markdown("#### 💾 Export des données filtrées")
         if len(filtered) > 0:
