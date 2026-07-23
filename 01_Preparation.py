@@ -1,4 +1,4 @@
-﻿"""
+"""
 PY_01_Preparation.py
 Prépare les données - Version alignée sur PaySim_pipelines_avance.ipynb
 
@@ -11,87 +11,41 @@ produit ici soit identique à celui utilisé plus loin pour l'entraînement
 des modèles (IsolationForest / clustering / etc.).
 """
 
+# ============================================
+# ⚠️ IMPORTANT : st.set_page_config DOIT être la première commande Streamlit
+# ============================================
 import streamlit as st
-import pandas as pd
-import numpy as np
-import os
-import gdown  # ⚠️ Nouvelle dépendance
-
-# ============================================
-# CONFIGURATION - Chemin vers votre fichier Drive
-# ============================================
-
-# Option 1 : URL de partage Google Drive (recommandé)
-DRIVE_FILE_URL = "https://drive.google.com/file/d/1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA/view?usp=sharing"
-# OU l'ID du fichier (extrait de l'URL)
-FILE_ID = "PS_20174392719_1491204439457_log.csv"  # Remplacez par le vrai ID
-
-# Option 2 : Chemin local si vous montez le Drive
-# (à utiliser avec Google Colab uniquement, pas Streamlit Cloud)
-LOCAL_DRIVE_PATH = "/content/drive/MyDrive/PAYSIM/archive(1)/PS_20174392719_1491204439457_log.csv"
-
-# ============================================
-# 1. CHARGEMENT DEPUIS GOOGLE DRIVE
-# ============================================
-
-st.subheader("📂 Étape 1 : Chargement depuis Google Drive")
-
-# Bouton pour lancer le chargement
-if st.button("📥 Charger le fichier depuis Google Drive", type="primary"):
-    with st.spinner("Téléchargement du fichier depuis Google Drive..."):
-        try:
-            # Méthode 1 : Utiliser gdown pour télécharger depuis l'URL
-            # Construire l'URL de téléchargement direct
-            if FILE_ID:
-                # Extraire l'ID du fichier de l'URL ou utiliser directement
-                # Pour obtenir l'ID : dans l'URL, c'est ce qu'il y a entre /d/ et /view
-                # Exemple : https://drive.google.com/file/d/1ABC123DEF456/view -> ID = 1ABC123DEF456
-                
-                # Télécharger le fichier
-                output_file = "paysim_data.csv"
-                url = f"https://drive.google.com/uc?id={FILE_ID}"
-                gdown.download(url, output_file, quiet=False)
-                
-                # Lire le fichier téléchargé
-                df = pd.read_csv(output_file)
-                st.success("✅ Fichier chargé avec succès depuis Google Drive !")
-                
-            # Méthode 2 : Si vous êtes sur Google Colab (pas Streamlit Cloud)
-            # elif os.path.exists(LOCAL_DRIVE_PATH):
-            #     df = pd.read_csv(LOCAL_DRIVE_PATH)
-            #     st.success("✅ Fichier chargé depuis le Drive monté !")
-            
-            else:
-                st.error("❌ Aucun ID de fichier configuré. Veuillez configurer FILE_ID.")
-                st.stop()
-                
-        except Exception as e:
-            st.error(f"❌ Erreur lors du chargement : {e}")
-            st.info("""
-            💡 **Comment obtenir l'ID de votre fichier :**
-            1. Ouvrez votre fichier sur Google Drive
-            2. Cliquez sur "Partager" et copiez le lien
-            3. Le lien ressemble à : https://drive.google.com/file/d/XXXXXXX/view
-            4. Copiez le XXXXXXX (c'est l'ID du fichier)
-            5. Remplacez FILE_ID dans le code par cet ID
-            """)
-            st.stop()
-
-    # Le reste du code de préparation reste identique
-    # Continuer avec df...
-
 st.set_page_config(
     page_title="📊 Préparation des données",
     page_icon="📊",
     layout="wide"
 )
 
+import pandas as pd
+import numpy as np
+import os
+import gdown
+import time
+
+# ============================================
+# CONFIGURATION - Chemin vers votre fichier Drive
+# ============================================
+
+# 🔑 REMPLACEZ CET ID PAR LE VRAI !
+# L'ID est ce qu'il y a entre /d/ et /view dans l'URL de partage
+# Exemple : https://drive.google.com/file/d/1ABC123DEF456XYZ/view 
+# -> ID = "1ABC123DEF456XYZ"
+FILE_ID = "1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA"  # ✅ J'ai mis l'ID de votre URL
+
+# Le chemin local où sera sauvegardé le fichier téléchargé
+DOWNLOAD_PATH = "paysim_data.csv"
+
 st.title("📊 Préparation des données PaySim")
 
 st.markdown("""
 Cette application reproduit fidèlement la phase de préparation du
 notebook `PaySim_pipelines_avance.ipynb` :
-1. **Charger** votre fichier CSV PaySim
+1. **Charger** votre fichier CSV PaySim depuis Google Drive
 2. **Filtrer** les DEBIT et les montants aberrants
 3. **Calculer** les frais selon le barème métier
 4. **Recalculer** les soldes (newbalanceOrig / newbalanceDest)
@@ -254,53 +208,85 @@ def run_preparation_pipeline(df):
 
 
 # ============================================
-# 1. UPLOAD DU FICHIER
+# 1. CHARGEMENT DEPUIS GOOGLE DRIVE
 # ============================================
 
-st.subheader("📂 Étape 1 : Chargement du fichier")
+st.subheader("📂 Étape 1 : Chargement depuis Google Drive")
 
-uploaded_file = st.file_uploader(
-    "Choisissez votre fichier CSV PaySim",
-    type=['csv'],
-    help="Le fichier doit être au format PaySim standard"
-)
+st.info(f"📁 Fichier à charger : `PS_20174392719_1491204439457_log.csv`")
 
-if uploaded_file is not None:
-    st.success(f"✅ Fichier chargé : {uploaded_file.name} ({uploaded_file.size / 1024 / 1024:.2f} MB)")
+# Bouton pour lancer le chargement
+if st.button("📥 Charger le fichier depuis Google Drive", type="primary"):
+    
+    with st.spinner("⏳ Téléchargement du fichier depuis Google Drive..."):
+        try:
+            # Vérifier si le fichier existe déjà en cache
+            if os.path.exists(DOWNLOAD_PATH):
+                st.info("📂 Fichier déjà téléchargé, utilisation du cache local...")
+                df = pd.read_csv(DOWNLOAD_PATH)
+            else:
+                # Télécharger le fichier avec gdown
+                progress_text = st.empty()
+                progress_text.text("🔄 Téléchargement en cours...")
+                
+                # Construire l'URL de téléchargement direct
+                url = f"https://drive.google.com/uc?id={FILE_ID}"
+                
+                # Télécharger avec gdown
+                gdown.download(url, DOWNLOAD_PATH, quiet=False)
+                
+                progress_text.text("✅ Téléchargement terminé !")
+                time.sleep(0.5)
+                progress_text.empty()
+                
+                # Lire le fichier téléchargé
+                df = pd.read_csv(DOWNLOAD_PATH)
+                
+            st.success("✅ Fichier chargé avec succès depuis Google Drive !")
+            
+            # Afficher les informations du fichier
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Lignes", f"{len(df):,}")
+            with col2:
+                st.metric("📋 Colonnes", f"{len(df.columns)}")
+            with col3:
+                fraud_count = df['isFraud'].sum() if 'isFraud' in df.columns else 0
+                st.metric("🚨 Transactions frauduleuses", f"{fraud_count:,}")
+            
+            st.write("🔍 **Colonnes trouvées :**", df.columns.tolist())
+            st.write("**Aperçu du fichier :**")
+            st.dataframe(df.head(5), use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"❌ Erreur lors du chargement : {e}")
+            st.info("""
+            💡 **Solutions possibles :**
+            1. Vérifiez que l'ID du fichier est correct
+            2. Assurez-vous que le fichier est accessible publiquement
+            3. Vérifiez votre connexion internet
+            
+            **Comment obtenir l'ID de votre fichier :**
+            1. Ouvrez votre fichier sur Google Drive
+            2. Cliquez sur "Partager" → "Toute personne disposant du lien"
+            3. Copiez le lien : https://drive.google.com/file/d/XXXXXXX/view
+            4. L'ID est le XXXXXXX
+            """)
+            st.stop()
 
-    # Chargement robuste (gestion encodage, comme load_paysim du notebook)
-    try:
-        df = pd.read_csv(uploaded_file, encoding="utf-8")
-    except UnicodeDecodeError:
-        uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, encoding="latin-1")
-    except Exception:
-        st.error("❌ Impossible de lire le fichier CSV. Vérifiez le format.")
-        st.stop()
-
-    # Nettoyage minimal des noms de colonnes (BOM éventuel)
-    df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-
-    st.write("🔍 **Colonnes trouvées :**", df.columns.tolist())
-    st.write("**Aperçu du fichier :**")
-    st.dataframe(df.head(5), use_container_width=True)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("📊 Lignes", f"{len(df):,}")
-    with col2:
-        st.metric("📋 Colonnes", f"{len(df.columns)}")
-    with col3:
-        fraud_count = df['isFraud'].sum() if 'isFraud' in df.columns else 0
-        st.metric("🚨 Transactions frauduleuses (retirées du pipeline)", f"{fraud_count:,}")
-
+    # ============================================
+    # 2. PRÉPARATION DES DONNÉES
+    # ============================================
+    
+    st.subheader("🔧 Étape 2 : Préparation des données")
+    
     if st.button("🚀 Lancer la préparation", type="primary"):
 
         required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
                           "oldbalanceOrg", "oldbalanceDest"}
         missing = required_cols - set(df.columns)
         if missing:
-            st.error(f"❌ Colonnes manquantes pour reproduire le pipeline du notebook : {sorted(missing)}")
+            st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
             st.stop()
 
         with st.spinner("Préparation des données en cours (pipeline notebook)..."):
@@ -348,8 +334,9 @@ if uploaded_file is not None:
             progress_bar.progress(100)
             status_text.text("✅ Préparation terminée !")
 
-        st.success("✅ Préparation terminée avec succès ! Le dataset correspond au pipeline du notebook.")
+        st.success("✅ Préparation terminée avec succès !")
 
+        # Statistiques
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("📊 Lignes", f"{len(df):,}")
@@ -360,6 +347,7 @@ if uploaded_file is not None:
         with col4:
             st.metric("📈 Montant total", f"{df['amount'].sum():,.0f} FCFA")
 
+        # Tabs
         st.subheader("📊 Statistiques des données préparées")
         tab1, tab2, tab3 = st.tabs(["📈 Statistiques", "📋 Distribution par type", "🔍 Aperçu"])
 
@@ -374,6 +362,7 @@ if uploaded_file is not None:
         with tab3:
             st.dataframe(df.head(10), use_container_width=True)
 
+        # Téléchargement
         st.subheader("📥 Télécharger les données préparées")
         csv = df.to_csv(index=False)
         st.download_button(
@@ -387,7 +376,7 @@ if uploaded_file is not None:
         st.info("🚀 **Prochaine étape :** Exécutez **PY_02_Training.py** pour entraîner les modèles d'anomalie.")
 
 else:
-    st.info("👆 Chargez votre fichier CSV PaySim pour commencer")
+    st.info("👆 Cliquez sur le bouton ci-dessus pour charger le fichier depuis Google Drive")
 
 st.divider()
 st.caption("📊 Préparation des données - Projet PaySim Haïti (alignée sur le notebook)")
