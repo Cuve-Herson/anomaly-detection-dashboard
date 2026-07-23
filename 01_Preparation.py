@@ -1,11 +1,34 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 import os
+import gc  # ← AJOUTÉ pour le garbage collector
 from datetime import datetime
-import gdown  # Ajout pour Google Drive
+import gdown
+
+# ============================================
+# FONCTIONS D'OPTIMISATION MÉMOIRE
+# ============================================
+
+def liberer_memoire():
+    """Libère la mémoire en forçant le garbage collector."""
+    # Supprimer le DataFrame brut
+    if 'df_raw' in st.session_state:
+        st.session_state.df_raw = None
+    
+    # Supprimer le fichier CSV temporaire
+    if os.path.exists("paysim_data.csv"):
+        os.remove("paysim_data.csv")
+    
+    # Forcer le garbage collector
+    gc.collect()
+    
+    # Afficher la mémoire libérée (optionnel)
+    import psutil
+    process = psutil.Process()
+    memory_mb = process.memory_info().rss / 1024 / 1024
+    st.session_state.memory_after_gc = memory_mb
 
 # ============================================
 # IMPORTS POUR LES GRAPHIQUES
@@ -552,7 +575,7 @@ if st.session_state.df_raw is None:
         st.rerun()
 
 # ============================================
-# ÉTAPE 2 : PRÉPARATION DES DONNÉES
+# ÉTAPE 2 : PRÉPARATION DES DONNÉES (AVEC LIBÉRATION DE MÉMOIRE)
 # ============================================
 
 elif st.session_state.df_prepared is None:
@@ -615,7 +638,32 @@ elif st.session_state.df_prepared is None:
             st.session_state.df_prepared = df
             st.session_state.step = 3
             progress_bar.progress(100)
-            status_text.text("✅ Préparation terminée !")
+            
+            # ============================================
+            # 🔥 LIBÉRATION DE LA MÉMOIRE ICI 🔥
+            # ============================================
+            status_text.text("🗑️ Libération de la mémoire...")
+            
+            # 1. Supprimer le DataFrame brut (le fichier original de 494 MB)
+            st.session_state.df_raw = None
+            
+            # 2. Supprimer le fichier CSV temporaire
+            if os.path.exists("paysim_data.csv"):
+                os.remove("paysim_data.csv")
+                status_text.text("🗑️ Fichier CSV temporaire supprimé")
+            
+            # 3. Forcer le garbage collector
+            gc.collect()
+            
+            # 4. Afficher le message de succès avec la mémoire libérée
+            memory_freed = "494"  # Taille approximative
+            status_text.success("✅ Préparation terminée !")
+            st.success(f"""
+            ✅ Préparation terminée avec succès !
+            - 📊 {len(df):,} transactions préparées
+            - 🗑️ Fichier original de ~{memory_freed} MB libéré de la mémoire
+            - 💾 Mémoire disponible pour les prochaines étapes
+            """)
             
             st.rerun()
 
