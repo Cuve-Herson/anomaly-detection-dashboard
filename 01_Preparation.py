@@ -1,14 +1,7 @@
 """
 PAYSIM_UNIFIED_APP.py
 Application Streamlit unifiée - Toutes les fonctionnalités en une seule interface
-
-Fusionne :
-1. PY_01_Preparation.py - Préparation des données (filtrage, calcul frais, features)
-2. PY_02_Training.py - Entraînement des modèles (M1, M2, M3)
-3. PY_03_Dashboard.py - Dashboard d'analyse (visualisations, anomalies, clustering)
-
-L'utilisateur charge son fichier CSV PaySim une seule fois,
-et l'application gère toute la chaîne de traitement.
+Version OPTIMISÉE POUR LA MÉMOIRE
 """
 
 import streamlit as st
@@ -16,8 +9,9 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import gc  # ← AJOUTÉ pour le garbage collector
 from datetime import datetime
-import gdown  # Ajout pour Google Drive
+import gdown
 
 # ============================================
 # IMPORTS POUR LES GRAPHIQUES
@@ -68,7 +62,7 @@ st.markdown('<p class="main-header">🛡️ PaySim Haïti - Analyse d\'anomalies
 # INITIALISATION DE L'ÉTAT DE SESSION
 # ============================================
 if 'step' not in st.session_state:
-    st.session_state.step = 1  # 1: Upload, 2: Préparation, 3: Entraînement, 4: Dashboard
+    st.session_state.step = 1
 if 'df_raw' not in st.session_state:
     st.session_state.df_raw = None
 if 'df_prepared' not in st.session_state:
@@ -83,12 +77,44 @@ if 'clustering_done' not in st.session_state:
     st.session_state.clustering_done = False
 if 'file_loaded' not in st.session_state:
     st.session_state.file_loaded = False
+if 'memory_saved' not in st.session_state:
+    st.session_state.memory_saved = 0
+
+# ============================================
+# FONCTION D'OPTIMISATION MÉMOIRE
+# ============================================
+def optimize_dataframe(df):
+    """Optimise la mémoire d'un DataFrame en réduisant les types de données."""
+    memory_before = df.memory_usage(deep=True).sum() / 1024 / 1024
+    
+    # Optimisation des colonnes numériques
+    for col in df.select_dtypes(include=['float64']).columns:
+        df[col] = df[col].astype('float32')
+    
+    for col in df.select_dtypes(include=['int64']).columns:
+        df[col] = df[col].astype('int32')
+    
+    # Optimisation des colonnes catégorielles
+    for col in df.select_dtypes(include=['object']).columns:
+        if df[col].nunique() < 50:
+            df[col] = df[col].astype('category')
+    
+    memory_after = df.memory_usage(deep=True).sum() / 1024 / 1024
+    st.session_state.memory_saved = memory_before - memory_after
+    
+    return df
+
+def liberer_memoire():
+    """Libère la mémoire en forçant le garbage collector."""
+    gc.collect()
+    if os.path.exists("paysim_data.csv"):
+        os.remove("paysim_data.csv")
 
 # ============================================
 # DÉFINITIONS COMMUNES
 # ============================================
 
-# Barèmes de frais (identiques au notebook)
+# Barèmes de frais
 CASH_OUT_BINS = [(20, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
                   (2000, 3999), (4000, 7999), (8000, 11999), (12000, 19999),
                   (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
@@ -102,7 +128,7 @@ P2P_BINS = [(10, 99), (100, 249), (250, 499), (500, 999), (1000, 1999),
             (20000, 39999), (40000, 59999), (60000, 74999), (75000, 100000)]
 P2P_FEES = [0, 0, 5, 10, 25, 35, 50, 60, 70, 75, 100, 120, 130]
 
-# Familles de variables pour les modèles
+# Familles de variables
 TRANSACTIONNELLES = [
     "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
     "type_encoded", "variationOrig", "variationDest", "ratio_amount_balance",
@@ -138,7 +164,7 @@ SEVERITY_MAP = {
 }
 
 # ============================================
-# CLASSE COLUMNSELECTOR (pour les pipelines)
+# CLASSE COLUMNSELECTOR
 # ============================================
 class ColumnSelector(BaseEstimator, TransformerMixin):
     def __init__(self, columns):
@@ -151,7 +177,7 @@ class ColumnSelector(BaseEstimator, TransformerMixin):
         return X[self.columns]
 
 # ============================================
-# FONCTIONS DE PRÉPARATION (Étape 1)
+# FONCTIONS DE PRÉPARATION
 # ============================================
 
 def filter_type(df, exclude=("DEBIT",)):
@@ -268,7 +294,7 @@ def run_preparation_pipeline(df):
     return df
 
 # ============================================
-# FONCTIONS D'ENTRAÎNEMENT (Étape 2)
+# FONCTIONS D'ENTRAÎNEMENT
 # ============================================
 
 def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
@@ -285,7 +311,7 @@ def build_anomaly_pipeline(columns, contamination=0.01, random_state=42):
     ])
 
 # ============================================
-# FONCTIONS D'EXPLICATION (pour l'onglet Anomalies)
+# FONCTIONS D'EXPLICATION
 # ============================================
 
 def expliquer_anomalie(row, scaled_row, df_complet, seuil_percentile=95):
@@ -437,7 +463,6 @@ def generer_resume_anomalie(row):
 # ============================================
 
 def afficher_progression():
-    """Affiche la barre de progression des étapes."""
     steps = [
         ("1. 📂 Chargement", "step_completed" if st.session_state.df_raw is not None else "step_active" if st.session_state.step == 1 else "step_pending"),
         ("2. 🔧 Préparation", "step_completed" if st.session_state.df_prepared is not None else "step_active" if st.session_state.step == 2 else "step_pending"),
@@ -456,7 +481,7 @@ def afficher_progression():
                 st.markdown(f'<div class="step-pending">⏸️ {label}</div>', unsafe_allow_html=True)
 
 # ============================================
-# ÉTAPE 1 : CHARGEMENT DU FICHIER (Google Drive)
+# ÉTAPE 1 : CHARGEMENT DU FICHIER
 # ============================================
 
 st.markdown("---")
@@ -464,40 +489,65 @@ st.markdown("---")
 if st.session_state.df_raw is None:
     st.markdown("## 📂 Étape 1 : Chargement du fichier PaySim depuis Google Drive")
     
-    # URL du fichier Google Drive
     DRIVE_FILE_ID = "1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA"
     DRIVE_URL = f"https://drive.google.com/file/d/{DRIVE_FILE_ID}/view?usp=sharing"
     DIRECT_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}"
     
     st.info(f"📁 Fichier source : [PaySim CSV]({DRIVE_URL})")
     
+    # Paramètres de chargement
+    st.markdown("### ⚙️ Paramètres de chargement")
+    
+    col_param1, col_param2 = st.columns(2)
+    
+    with col_param1:
+        max_rows = st.selectbox(
+            "Nombre maximum de lignes à charger",
+            options=[10000, 25000, 50000, 100000, 200000, 500000],
+            index=2,  # 50 000 par défaut
+            help="Chargez moins de lignes pour économiser la mémoire"
+        )
+    
+    with col_param2:
+        use_sampling = st.checkbox(
+            "Utiliser un échantillon aléatoire",
+            value=True,
+            help="Charge un échantillon aléatoire au lieu des premières lignes"
+        )
+    
     col1, col2 = st.columns([3, 1])
     
     with col1:
         st.markdown("""
         **Options de chargement :**
-        - Cliquez sur le bouton ci-contre pour charger automatiquement le fichier
         - Le fichier sera téléchargé depuis Google Drive
-        - Taille estimée : ~150-200 MB (peut prendre quelques secondes)
+        - Seulement un échantillon sera chargé pour économiser la mémoire
+        - Après la préparation, le fichier original sera supprimé
         """)
     
     with col2:
         if st.button("🚀 Charger depuis Google Drive", type="primary", use_container_width=True):
             with st.spinner("Téléchargement du fichier depuis Google Drive..."):
                 try:
-                    # Téléchargement du fichier
                     output = "paysim_data.csv"
                     gdown.download(DIRECT_DOWNLOAD_URL, output, quiet=False)
                     
-                    # Lecture du fichier
-                    with st.spinner("Lecture du fichier CSV..."):
-                        try:
-                            df = pd.read_csv(output, encoding="utf-8")
-                        except UnicodeDecodeError:
-                            df = pd.read_csv(output, encoding="latin-1")
-                        except Exception as e:
-                            st.error(f"❌ Erreur lors de la lecture du fichier : {str(e)}")
-                            st.stop()
+                    with st.spinner(f"Lecture de {max_rows:,} lignes..."):
+                        if use_sampling:
+                            # Échantillonnage aléatoire
+                            total_lines = sum(1 for _ in open(output, 'rb')) - 1
+                            if total_lines > max_rows:
+                                skip_rows = np.random.choice(
+                                    range(1, total_lines + 1),
+                                    size=total_lines - max_rows,
+                                    replace=False
+                                )
+                                df = pd.read_csv(output, skiprows=skip_rows)
+                            else:
+                                df = pd.read_csv(output)
+                        else:
+                            # Lecture des premières lignes
+                            df = pd.read_csv(output, nrows=max_rows)
                     
                     # Nettoyage
                     df.columns = df.columns.str.strip().str.replace('\ufeff', '')
@@ -510,6 +560,9 @@ if st.session_state.df_raw is None:
                         st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
                         st.stop()
                     
+                    # Optimisation mémoire
+                    df = optimize_dataframe(df)
+                    
                     # Nettoyage du fichier temporaire
                     if os.path.exists(output):
                         os.remove(output)
@@ -517,16 +570,17 @@ if st.session_state.df_raw is None:
                     st.session_state.df_raw = df
                     st.session_state.step = 2
                     st.session_state.file_loaded = True
-                    st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
+                    
+                    st.success(f"✅ {len(df):,} transactions chargées avec succès !")
                     st.rerun()
                     
                 except Exception as e:
                     st.error(f"❌ Erreur de téléchargement : {str(e)}")
                     st.markdown("""
                     **Solutions possibles :**
-                    1. Vérifiez votre connexion internet
-                    2. Assurez-vous que le fichier est accessible publiquement
-                    3. Essayez de télécharger manuellement et de l'uploader
+                    1. Réduisez le nombre de lignes
+                    2. Vérifiez votre connexion internet
+                    3. Essayez de télécharger manuellement
                     """)
     
     # Option alternative : upload manuel
@@ -540,28 +594,27 @@ if st.session_state.df_raw is None:
     
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file, encoding="utf-8")
-        except UnicodeDecodeError:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding="latin-1")
+            df = pd.read_csv(uploaded_file, nrows=max_rows)
+            
+            df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+            
+            required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
+                              "oldbalanceOrg", "oldbalanceDest"}
+            missing = required_cols - set(df.columns)
+            if missing:
+                st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
+                st.stop()
+            
+            df = optimize_dataframe(df)
+            
+            st.session_state.df_raw = df
+            st.session_state.step = 2
+            st.session_state.file_loaded = True
+            st.success(f"✅ {len(df):,} transactions chargées avec succès !")
+            st.rerun()
+            
         except Exception as e:
-            st.error(f"❌ Impossible de lire le fichier CSV. Vérifiez le format. Erreur : {str(e)}")
-            st.stop()
-        
-        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-        
-        required_cols = {"type", "amount", "step", "nameOrig", "nameDest",
-                          "oldbalanceOrg", "oldbalanceDest"}
-        missing = required_cols - set(df.columns)
-        if missing:
-            st.error(f"❌ Colonnes manquantes : {sorted(missing)}")
-            st.stop()
-        
-        st.session_state.df_raw = df
-        st.session_state.step = 2
-        st.session_state.file_loaded = True
-        st.success(f"✅ Fichier chargé avec succès ! {len(df):,} transactions")
-        st.rerun()
+            st.error(f"❌ Erreur : {str(e)}")
 
 # ============================================
 # ÉTAPE 2 : PRÉPARATION DES DONNÉES
@@ -580,8 +633,7 @@ elif st.session_state.df_prepared is None:
     with col2:
         st.metric("📋 Colonnes", f"{len(df.columns)}")
     with col3:
-        fraud_count = df['isFraud'].sum() if 'isFraud' in df.columns else 0
-        st.metric("🚨 Transactions frauduleuses", f"{fraud_count:,}")
+        st.metric("💾 Mémoire utilisée", f"{df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
     
     with st.expander("👁️ Aperçu des données brutes", expanded=False):
         st.dataframe(df.head(10), use_container_width=True)
@@ -623,11 +675,39 @@ elif st.session_state.df_prepared is None:
             df = encode_type(df)
             progress_bar.progress(95)
             
-            status_text.text("💾 Sauvegarde en mémoire...")
+            # ============================================
+            # 🔥 LIBÉRATION DE LA MÉMOIRE 🔥
+            # ============================================
+            
+            status_text.text("💾 Optimisation mémoire et libération...")
+            
+            # 1. Optimisation des types
+            df = optimize_dataframe(df)
+            
+            # 2. Sauvegarde du DataFrame préparé
             st.session_state.df_prepared = df
+            
+            # 3. LIBÉRATION DU DATAFRAME BRUT
+            st.session_state.df_raw = None
+            
+            # 4. SUPPRESSION DU FICHIER CSV TEMPORAIRE
+            if os.path.exists("paysim_data.csv"):
+                os.remove("paysim_data.csv")
+                status_text.text("🗑️ Fichier CSV temporaire supprimé")
+            
+            # 5. GARBAGE COLLECTOR
+            gc.collect()
+            
             st.session_state.step = 3
             progress_bar.progress(100)
-            status_text.text("✅ Préparation terminée !")
+            
+            status_text.success("✅ Préparation terminée !")
+            st.success(f"""
+            ✅ Préparation terminée avec succès !
+            - {len(df):,} transactions préparées
+            - Mémoire utilisée : {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB
+            - Mémoire libérée : {st.session_state.memory_saved:.2f} MB
+            """)
             
             st.rerun()
 
@@ -650,7 +730,6 @@ elif st.session_state.df_trained is None:
     with col3:
         st.metric("💰 Frais total", f"{df['frais'].sum():,.0f} FCFA")
     
-    # Familles de variables
     st.markdown("### 🧬 Familles de variables")
     
     col_fam1, col_fam2, col_fam3 = st.columns(3)
@@ -661,7 +740,6 @@ elif st.session_state.df_trained is None:
     with col_fam3:
         st.markdown(f"**M3 — + Temporelles** ({len(FEATURE_SETS['M3'])} variables)")
     
-    # Paramètres
     st.markdown("### ⚙️ Paramètres d'entraînement")
     
     col_param1, col_param2, col_param3 = st.columns(3)
@@ -696,13 +774,10 @@ elif st.session_state.df_trained is None:
             status_text = st.empty()
             logs = st.empty()
             
-            model_pipelines = {}
-            n_components_info = {}
             scaler_m3 = None
             
             for i, (name, cols) in enumerate(FEATURE_SETS.items()):
                 status_text.info(f"🌲 Entraînement du modèle {name}...")
-                logs.info(f"Variables utilisées : {len(cols)} colonnes")
                 
                 pipeline = build_anomaly_pipeline(
                     cols,
@@ -719,8 +794,6 @@ elif st.session_state.df_trained is None:
                 df[f"Score_{name}"] = pipeline.decision_function(df)
                 df[f"Prediction_{name}"] = pipeline.predict(df)
                 
-                n_components_info[name] = pipeline.named_steps["acp"].n_components_
-                
                 n_anomalies = (df[f"Prediction_{name}"] == -1).sum()
                 logs.info(f"✅ {name} terminé : {n_anomalies:,} anomalies détectées ({n_anomalies/len(df)*100:.2f}%)")
                 
@@ -734,6 +807,9 @@ elif st.session_state.df_trained is None:
             )
             
             df["Sévérité"] = df["NbModelesAnomalie"].map(lambda x: SEVERITY_MAP[x]['label'])
+            
+            # Optimisation mémoire avant de passer au dashboard
+            df = optimize_dataframe(df)
             
             st.session_state.df_trained = df
             st.session_state.scaler = scaler_m3
@@ -759,16 +835,12 @@ else:
     if scaler is not None:
         X_scaled = scaler.transform(df[NUM_COLS])
     else:
-        # Recalculer le scaler si non disponible
         scaler = RobustScaler()
         X_scaled = scaler.fit_transform(df[NUM_COLS])
     
     X_scaled_df = pd.DataFrame(X_scaled, columns=NUM_COLS, index=df.index)
     
-    # ============================================
     # KPIS
-    # ============================================
-    
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     
     with k1:
@@ -1372,4 +1444,4 @@ else:
 # FOOTER
 # ============================================
 st.divider()
-st.caption("🛡️ PaySim Haïti - Application unifiée d'analyse d'anomalies")
+st.caption("🛡️ PaySim Haïti - Application unifiée d'analyse d'anomalies (v2 - optimisée mémoire)")
