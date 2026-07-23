@@ -22,7 +22,7 @@ import gdown  # ⚠️ Nouvelle dépendance
 # ============================================
 
 # Option 1 : URL de partage Google Drive (recommandé)
-DRIVE_FILE_URL = "https://drive.google.com/file/d/PS_20174392719_1491204439457_log.csv/view?usp=sharing"
+DRIVE_FILE_URL = "https://drive.google.com/file/d/1ddwlGLpzmim1dzXy1hVR35aBq9EKJXuA/view?usp=sharing"
 # OU l'ID du fichier (extrait de l'URL)
 FILE_ID = "PS_20174392719_1491204439457_log.csv"  # Remplacez par le vrai ID
 
